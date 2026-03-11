@@ -63,10 +63,12 @@ Each SSH invocation is executed directly through `execvp()` in a child worker pr
 The SSH worker currently uses:
 
 - `/usr/bin/ssh`
-- `-o BatchMode=yes`
 - `-o StrictHostKeyChecking=no`
+- `-o ConnectTimeout=5`
 
-This makes the execution non-interactive and suitable for scripted fan-out behavior.
+Authentication is intentionally delegated to the system OpenSSH client. PipeShellX does not implement SSH authentication itself; it executes `ssh` and lets OpenSSH apply config files, agent state, keys, and other supported authentication mechanisms.
+
+If a client has a non-empty in-memory password captured through the interactive shell, the worker prepends `sshpass -p <password>` before the `ssh` invocation. Otherwise it uses plain `ssh`.
 
 ## Multi-Client Architecture
 
@@ -217,7 +219,7 @@ Each log line includes:
 - Distributed execution activates only when `clients.txt` exists in the current working directory.
 - The command allowlist still applies before any SSH fan-out happens.
 - Output is grouped after collection, not streamed in real time to the terminal by client.
-- The implementation assumes SSH connectivity and key-based or otherwise non-interactive authentication.
+- The implementation assumes SSH connectivity and delegates authentication selection to the local OpenSSH client.
 
 ## Summary
 

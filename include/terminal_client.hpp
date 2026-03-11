@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <mutex>
+#include <optional>
 
 #include "client_manager.hpp"
 #include "process_manager.hpp"
@@ -32,6 +33,8 @@ private:
     void printStatusTable();
     void refreshClientStatuses(const std::vector<ProcessManager::ClientResult>& clientResults);
     void handleExit();
+    bool promptPasswordRequired();
+    std::optional<std::string> promptPasswordSecurely();
 
     // Color codes
     const std::string COLOR_RESET = "\033[0m";

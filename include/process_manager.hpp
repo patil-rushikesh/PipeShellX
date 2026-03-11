@@ -8,6 +8,7 @@
 
 #include "client_config.hpp"
 #include "logger.hpp"
+#include "ssh_auth.hpp"
 
 class ProcessManager {
 public:

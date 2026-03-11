@@ -3,6 +3,7 @@
 #include "command_executor.hpp"
 #include "logger.hpp"
 
+#include <termios.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -140,6 +141,64 @@ void TerminalClient::refreshClientStatuses(const std::vector<ProcessManager::Cli
     }
 }
 
+bool TerminalClient::promptPasswordRequired() {
+    std::lock_guard<std::mutex> lock(outputMutex);
+    for (;;) {
+        std::cout << "Password required? (y/n) ";
+        std::cout.flush();
+
+        std::string response;
+        if (!std::getline(std::cin, response)) {
+            return false;
+        }
+
+        response = trim(response);
+        if (response == "y" || response == "Y") {
+            return true;
+        }
+        if (response == "n" || response == "N") {
+            return false;
+        }
+    }
+}
+
+std::optional<std::string> TerminalClient::promptPasswordSecurely() {
+    if (!isatty(STDIN_FILENO)) {
+        throw std::runtime_error("password prompt requires a terminal");
+    }
+
+    std::lock_guard<std::mutex> lock(outputMutex);
+    termios originalAttributes{};
+    if (tcgetattr(STDIN_FILENO, &originalAttributes) == -1) {
+        throw std::runtime_error("failed to read terminal attributes");
+    }
+
+    termios hiddenAttributes = originalAttributes;
+    hiddenAttributes.c_lflag &= static_cast<tcflag_t>(~ECHO);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &hiddenAttributes) == -1) {
+        throw std::runtime_error("failed to disable terminal echo");
+    }
+
+    try {
+        std::cout << "Enter password: ";
+        std::cout.flush();
+
+        std::string password;
+        if (!std::getline(std::cin, password)) {
+            (void)tcsetattr(STDIN_FILENO, TCSANOW, &originalAttributes);
+            std::cout << '\n';
+            return std::nullopt;
+        }
+
+        std::cout << '\n';
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &originalAttributes);
+        return password;
+    } catch (...) {
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &originalAttributes);
+        throw;
+    }
+}
+
 void TerminalClient::handleExit() {
     printColored("\nExiting PipeShellX. Goodbye!\n", COLOR_YELLOW);
     running = false;
@@ -160,7 +219,17 @@ bool TerminalClient::handleClientCommand(const std::string& command) {
             printError("Usage: add-client <ssh-url|user@host>");
             return true;
         }
-        clientManager.addClient(specification);
+        const bool requiresPassword = promptPasswordRequired();
+        if (requiresPassword) {
+            const auto password = promptPasswordSecurely();
+            if (!password.has_value()) {
+                printError("Password entry aborted");
+                return true;
+            }
+            clientManager.addClient(specification, password);
+        } else {
+            clientManager.addClient(specification, std::string{});
+        }
         printColored("Client added.\n", COLOR_BLUE);
         return true;
     }

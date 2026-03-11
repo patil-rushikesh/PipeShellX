@@ -138,6 +138,27 @@ Then run the shell normally:
 
 When `clients.txt` is present, an entered command is executed on all configured clients in parallel over SSH.
 
+SSH authentication is delegated to the system OpenSSH client by default. When a password is supplied through the interactive `add-client` prompt, PipeShellX keeps it in memory for the current session and invokes `sshpass -p <password> ssh ...` for that client. Passwords are not written to `clients.txt`.
+
+### SSH Authentication
+
+PipeShellX supports these SSH authentication modes:
+
+- key-based authentication through the local OpenSSH client
+- password-based authentication through `sshpass` when the password is supplied interactively
+- `ssh-agent` authentication through the local OpenSSH client
+- `~/.ssh/config`-driven authentication and host settings through the local OpenSSH client
+
+No application-specific authentication configuration is required for key-based auth, `ssh-agent`, or `~/.ssh/config`. PipeShellX defers those behaviors to the system `ssh` client.
+
+For password-only hosts:
+
+1. run `add-client user@host`
+2. answer `Password required? (y/n)` with `y`
+3. enter the password at the hidden prompt
+
+The password is kept in memory only for the current process. It is not printed to the terminal, not written to logs, and not persisted to `clients.txt`.
+
 Example:
 
 ```text
@@ -251,6 +272,7 @@ cmd> df -h
 
 - [docs/system_flow.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/system_flow.md)
 - [docs/distributed_execution.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/distributed_execution.md)
+- [docs/authentication.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/authentication.md)
 - [docs/security.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/security.md)
 - [docs/deployment.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/deployment.md)
 - [docs/testing.md](/Users/admin/rushikesh/Academics/operating_system/assignments/application/docs/testing.md)

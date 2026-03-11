@@ -6,6 +6,7 @@ add_library(remote_command_lib
     client_manager.cpp
     ipc_engine.cpp
     process_manager.cpp
+    ssh_auth.cpp
     command_executor.cpp
     session_manager.cpp
     logger.cpp

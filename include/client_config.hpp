@@ -10,6 +10,7 @@ struct ClientEntry {
     std::string host;
     std::uint16_t port{22};
     std::string identityFile;
+    std::string password;
 
     std::string clientId() const;
     std::string sshTarget() const;

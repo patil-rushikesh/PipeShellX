@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace {
 
@@ -42,6 +43,21 @@ std::pair<std::string, std::string> splitOnce(const std::string& value, char sep
         return {value, ""};
     }
     return {value.substr(0, position), value.substr(position + 1)};
+}
+
+std::vector<std::string> splitAll(const std::string& value, char separator) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t end = value.find(separator, start);
+        if (end == std::string::npos) {
+            parts.push_back(value.substr(start));
+            break;
+        }
+        parts.push_back(value.substr(start, end - start));
+        start = end + 1;
+    }
+    return parts;
 }
 
 ClientEntry parseLegacyEntry(const std::string& trimmed) {
@@ -84,17 +100,29 @@ ClientEntry parseUrlEntry(const std::string& trimmed) {
     }
 
     if (!query.empty()) {
-        const auto [key, value] = splitOnce(query, '=');
-        if (key != "identity" && key != "key") {
+        for (const auto& parameter : splitAll(query, '&')) {
+            const auto [key, value] = splitOnce(parameter, '=');
+            if (key.empty()) {
+                throw std::runtime_error("unsupported SSH URL query parameter");
+            }
+
+            if (key == "identity" || key == "key") {
+                if (value.empty()) {
+                    throw std::runtime_error("identity file path is empty");
+                }
+                if (!std::all_of(value.begin(), value.end(), isValidPathChar)) {
+                    throw std::runtime_error("identity file contains invalid characters");
+                }
+                entry.identityFile = value;
+                continue;
+            }
+
+            if (key == "password") {
+                throw std::runtime_error("passwords are not allowed in client configuration; use interactive prompt");
+            }
+
             throw std::runtime_error("unsupported SSH URL query parameter");
         }
-        if (value.empty()) {
-            throw std::runtime_error("identity file path is empty");
-        }
-        if (!std::all_of(value.begin(), value.end(), isValidPathChar)) {
-            throw std::runtime_error("identity file contains invalid characters");
-        }
-        entry.identityFile = value;
     }
 
     return entry;
@@ -138,8 +166,19 @@ std::string ClientEntry::serialize() const {
     if (port != 22) {
         serialized += ":" + std::to_string(port);
     }
+
+    std::vector<std::string> queryParameters;
     if (!identityFile.empty()) {
-        serialized += "?identity=" + identityFile;
+        queryParameters.push_back("identity=" + identityFile);
+    }
+    if (!queryParameters.empty()) {
+        serialized += "?";
+        for (std::size_t index = 0; index < queryParameters.size(); ++index) {
+            if (index != 0) {
+                serialized += "&";
+            }
+            serialized += queryParameters[index];
+        }
     }
     return serialized;
 }

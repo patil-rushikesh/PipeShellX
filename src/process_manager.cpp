@@ -334,7 +334,7 @@ std::string ProcessManager::classifyRemoteError(const ClientResult& clientResult
         return "ERROR: connection failed";
     }
 
-    if (containsInsensitive(stderrText, "permission denied")) {
+    if (isSshAuthenticationFailure(stderrText)) {
         return "ERROR: authentication failed";
     }
 
@@ -616,23 +616,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                 closePipePair(worker.stdoutPipe);
                 closePipePair(worker.stderrPipe);
 
-                std::vector<std::string> sshArgs = {
-                    "/usr/bin/ssh",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                };
-                if (client.port != 22) {
-                    sshArgs.push_back("-p");
-                    sshArgs.push_back(std::to_string(client.port));
-                }
-                if (!client.identityFile.empty()) {
-                    sshArgs.push_back("-i");
-                    sshArgs.push_back(client.identityFile);
-                }
-                sshArgs.push_back(client.sshTarget());
-                sshArgs.push_back(remoteCommand);
+                std::vector<std::string> sshArgs = buildSshCommandArguments(client, remoteCommand);
 
                 std::vector<char*> argv;
                 argv.reserve(sshArgs.size() + 1);

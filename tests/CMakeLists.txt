@@ -8,8 +8,10 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(remote_command_tests
+    test_client_config.cpp
     test_ipc.cpp
     test_prcoess_manager.cpp
+    test_ssh_auth.cpp
 )
 
 target_include_directories(remote_command_tests PRIVATE

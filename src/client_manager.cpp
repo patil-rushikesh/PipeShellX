@@ -1,107 +1,13 @@
 #include "client_manager.hpp"
 
 #include "logger.hpp"
+#include "process_manager.hpp"
 
-#include <cerrno>
 #include <algorithm>
-#include <array>
-#include <cstring>
-#include <fcntl.h>
-#include <sstream>
+#include <optional>
 #include <stdexcept>
-#include <sys/wait.h>
+#include <string>
 #include <unistd.h>
-
-namespace {
-
-class ScopedFd {
-public:
-    explicit ScopedFd(int fd = -1) noexcept
-        : fd_(fd) {}
-
-    ScopedFd(const ScopedFd&) = delete;
-    ScopedFd& operator=(const ScopedFd&) = delete;
-
-    ScopedFd(ScopedFd&& other) noexcept
-        : fd_(other.release()) {}
-
-    ScopedFd& operator=(ScopedFd&& other) noexcept {
-        if (this != &other) {
-            reset(other.release());
-        }
-        return *this;
-    }
-
-    ~ScopedFd() {
-        reset();
-    }
-
-    int get() const noexcept {
-        return fd_;
-    }
-
-    int release() noexcept {
-        const int fd = fd_;
-        fd_ = -1;
-        return fd;
-    }
-
-    void reset(int fd = -1) noexcept {
-        if (fd_ >= 0) {
-            while (close(fd_) == -1 && errno == EINTR) {
-            }
-        }
-        fd_ = fd;
-    }
-
-private:
-    int fd_;
-};
-
-std::string readAllFromFd(int fd) {
-    std::string output;
-    std::array<char, 512> buffer{};
-    for (;;) {
-        const ssize_t bytesRead = read(fd, buffer.data(), buffer.size());
-        if (bytesRead > 0) {
-            output.append(buffer.data(), static_cast<std::size_t>(bytesRead));
-            continue;
-        }
-        if (bytesRead == 0) {
-            break;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        throw std::runtime_error(std::string("Failed to read SSH verification output: ") + std::strerror(errno));
-    }
-    return output;
-}
-
-int waitForChild(pid_t pid) {
-    int status = 0;
-    for (;;) {
-        const pid_t result = waitpid(pid, &status, 0);
-        if (result == pid) {
-            return status;
-        }
-        if (result == -1 && errno == EINTR) {
-            continue;
-        }
-        throw std::runtime_error(std::string("Failed to wait for SSH verification process: ") + std::strerror(errno));
-    }
-}
-
-std::string trimWhitespace(std::string value) {
-    const auto begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) {
-        return {};
-    }
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-} // namespace
 
 ClientManager::ClientManager(std::string configPath)
     : configPath_(std::move(configPath)) {}
@@ -123,10 +29,11 @@ void ClientManager::load() {
     nextClientId_ = 1;
     for (const auto& entry : config.clients()) {
         clients_.push_back(ManagedClient{
-            Client{nextClientId_++, entry.serialize(), false},
+            Client{nextClientId_++, entry.serialize(), entry.password, false},
             entry,
             ClientStatus::UNKNOWN,
-            {}
+            {},
+            true
         });
     }
 }
@@ -136,7 +43,12 @@ void ClientManager::save() const {
     std::vector<ClientEntry> entriesToPersist;
     entriesToPersist.reserve(clients_.size());
     for (const auto& client : clients_) {
-        entriesToPersist.push_back(client.entry);
+        ClientEntry persistedEntry = client.entry;
+        if (!client.persistPassword) {
+            persistedEntry.password.clear();
+            persistedEntry.raw = persistedEntry.serialize();
+        }
+        entriesToPersist.push_back(std::move(persistedEntry));
     }
     config.setClients(std::move(entriesToPersist));
     config.saveToFile(configPath_);
@@ -168,8 +80,11 @@ std::vector<Client> ClientManager::listClients() const {
     return listedClients;
 }
 
-void ClientManager::addClient(const std::string& specification) {
-    const ClientEntry entry = ClientConfig::parseEntry(specification);
+void ClientManager::addClient(const std::string& specification, const std::optional<std::string>& password) {
+    ClientEntry entry = ClientConfig::parseEntry(specification);
+    if (password.has_value()) {
+        entry.password = *password;
+    }
     if (findClient(entry.clientId()) != clients_.end()) {
         throw std::runtime_error("Client already exists: " + entry.clientId());
     }
@@ -183,10 +98,11 @@ void ClientManager::addClient(const std::string& specification) {
     Logger::getInstance().log(LogLevel::INFO, addContext, "Adding client");
 
     clients_.push_back(ManagedClient{
-        Client{nextClientId_++, entry.serialize(), false},
+        Client{nextClientId_++, entry.serialize(), entry.password, false},
         entry,
         ClientStatus::UNKNOWN,
-        {}
+        {},
+        false
     });
     verifyClientConnectivity(clients_.back());
     save();
@@ -275,6 +191,7 @@ void ClientManager::updateClientStatus(const std::string& identifier, ClientStat
     it->status = status;
     it->client.online = status == ClientStatus::ONLINE;
     it->client.ssh_url = it->entry.serialize();
+    it->client.password = it->entry.password;
     it->lastError = std::move(errorMessage);
 }
 
@@ -287,6 +204,7 @@ void ClientManager::updateClientStatus(int id, ClientStatus status, std::string 
     it->status = status;
     it->client.online = status == ClientStatus::ONLINE;
     it->client.ssh_url = it->entry.serialize();
+    it->client.password = it->entry.password;
     it->lastError = std::move(errorMessage);
 }
 
@@ -299,92 +217,29 @@ void ClientManager::resetStatuses() noexcept {
 }
 
 void ClientManager::verifyClientConnectivity(ManagedClient& client) {
-    std::array<int, 2> pipeFds{-1, -1};
-    if (pipe(pipeFds.data()) == -1) {
-        throw std::runtime_error(std::string("Failed to create SSH verification pipe: ") + std::strerror(errno));
-    }
-
-    ScopedFd readEnd(pipeFds[0]);
-    ScopedFd writeEnd(pipeFds[1]);
-    const std::string commandDescription = "ssh " + client.entry.clientId() + " \"echo connected\"";
+    const std::string remoteCommand = "echo connected";
     const std::string sessionId = "client-verify-" + std::to_string(client.client.id);
+    const LogContext context{getpid(), sessionId, client.entry.clientId(), "ssh " + client.entry.clientId() + " " + remoteCommand};
 
-    Logger::getInstance().log(
-        LogLevel::INFO,
-        LogContext{getpid(), sessionId, client.entry.clientId(), commandDescription},
-        "Verifying SSH connectivity"
-    );
+    Logger::getInstance().log(LogLevel::INFO, context, "Verifying SSH connectivity");
 
-    const pid_t pid = fork();
-    if (pid < 0) {
-        throw std::runtime_error(std::string("Failed to fork SSH verification process: ") + std::strerror(errno));
-    }
-
-    if (pid == 0) {
-        if (dup2(writeEnd.get(), STDOUT_FILENO) == -1 || dup2(writeEnd.get(), STDERR_FILENO) == -1) {
-            _exit(127);
-        }
-
-        readEnd.reset();
-        writeEnd.reset();
-
-        std::vector<std::string> arguments{
-            "/usr/bin/ssh",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=5"
-        };
-        if (client.entry.port != 22) {
-            arguments.push_back("-p");
-            arguments.push_back(std::to_string(client.entry.port));
-        }
-        if (!client.entry.identityFile.empty()) {
-            arguments.push_back("-i");
-            arguments.push_back(client.entry.identityFile);
-        }
-        arguments.push_back(client.entry.sshTarget());
-        arguments.push_back("echo connected");
-
-        std::vector<char*> argv;
-        argv.reserve(arguments.size() + 1);
-        for (auto& argument : arguments) {
-            argv.push_back(argument.data());
-        }
-        argv.push_back(nullptr);
-
-        execvp(argv[0], argv.data());
-        _exit(errno == ENOENT ? 127 : 126);
-    }
-
-    writeEnd.reset();
-
-    std::string output;
-    int waitStatus = 0;
-    try {
-        output = readAllFromFd(readEnd.get());
-        readEnd.reset();
-        waitStatus = waitForChild(pid);
-    } catch (...) {
-        readEnd.reset();
-        int ignoredStatus = 0;
-        while (waitpid(pid, &ignoredStatus, 0) == -1 && errno == EINTR) {
-        }
-        throw;
-    }
-
-    const std::string trimmedOutput = trimWhitespace(output);
+    ProcessManager processManager;
+    const auto result = processManager.executeRemote({client.entry}, remoteCommand, context, 10);
+    const auto& clientResult = result.clientResults.front();
     const bool connected =
-        WIFEXITED(waitStatus) &&
-        WEXITSTATUS(waitStatus) == 0 &&
-        trimmedOutput.find("connected") != std::string::npos;
+        clientResult.exitCode == 0 &&
+        !clientResult.timedOut &&
+        clientResult.stdoutData.find("connected") != std::string::npos;
 
     client.status = connected ? ClientStatus::ONLINE : ClientStatus::OFFLINE;
     client.client.online = connected;
     client.client.ssh_url = client.entry.serialize();
-    client.lastError = connected ? "" : (trimmedOutput.empty() ? "ERROR: connection failed" : trimmedOutput);
+    client.client.password = client.entry.password;
+    client.lastError = connected ? std::string() : (clientResult.errorMessage.empty() ? clientResult.stderrData : clientResult.errorMessage);
 
     Logger::getInstance().log(
         connected ? LogLevel::INFO : LogLevel::ERROR,
-        LogContext{getpid(), sessionId, client.entry.clientId(), commandDescription},
+        context,
         connected ? "SSH connectivity verified" : client.lastError
     );
 }

@@ -16,6 +16,7 @@ enum class ClientStatus {
 struct Client {
     int id;
     std::string ssh_url;
+    std::string password;
     bool online;
 };
 
@@ -24,6 +25,7 @@ struct ManagedClient {
     ClientEntry entry;
     ClientStatus status{ClientStatus::UNKNOWN};
     std::string lastError;
+    bool persistPassword{true};
 };
 
 class ClientManager {
@@ -38,7 +40,7 @@ public:
     std::vector<ClientEntry> entries() const;
     std::vector<Client> listClients() const;
 
-    void addClient(const std::string& specification);
+    void addClient(const std::string& specification, const std::optional<std::string>& password = std::nullopt);
     bool removeClient(const std::string& identifier);
     bool removeClient(int id);
     bool checkClientStatus(const std::string& identifier) const;
