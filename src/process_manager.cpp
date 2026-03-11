@@ -309,6 +309,16 @@ std::string ProcessManager::classifyRemoteError(const ClientResult& clientResult
     };
 
     const std::string& stderrText = clientResult.stderrData;
+    if (containsInsensitive(stderrText, "execvp failed")) {
+        return "ERROR: command execution failed";
+    }
+
+    if (containsInsensitive(stderrText, "dup2 failed") ||
+        containsInsensitive(stderrText, "open(/dev/null) failed") ||
+        containsInsensitive(stderrText, "setpgid failed")) {
+        return "ERROR: remote worker setup failed";
+    }
+
     if (containsInsensitive(stderrText, "could not resolve hostname") ||
         containsInsensitive(stderrText, "name or service not known") ||
         containsInsensitive(stderrText, "temporary failure in name resolution")) {
@@ -567,18 +577,18 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
             worker.client = client;
 
             if (pipe(worker.stdoutPipe.data()) == -1) {
-                throw std::runtime_error("stdout pipe creation failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+                throw std::runtime_error("stdout pipe creation failed for " + client.clientId() + ": " + std::string(std::strerror(errno)));
             }
             if (pipe(worker.stderrPipe.data()) == -1) {
                 closePipePair(worker.stdoutPipe);
-                throw std::runtime_error("stderr pipe creation failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+                throw std::runtime_error("stderr pipe creation failed for " + client.clientId() + ": " + std::string(std::strerror(errno)));
             }
 
             const pid_t pid = fork();
             if (pid == -1) {
                 closePipePair(worker.stdoutPipe);
                 closePipePair(worker.stderrPipe);
-                throw std::runtime_error("fork() failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+                throw std::runtime_error("fork() failed for " + client.clientId() + ": " + std::string(std::strerror(errno)));
             }
 
             if (pid == 0) {
@@ -612,9 +622,17 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                     "BatchMode=yes",
                     "-o",
                     "StrictHostKeyChecking=no",
-                    client.raw,
-                    remoteCommand
                 };
+                if (client.port != 22) {
+                    sshArgs.push_back("-p");
+                    sshArgs.push_back(std::to_string(client.port));
+                }
+                if (!client.identityFile.empty()) {
+                    sshArgs.push_back("-i");
+                    sshArgs.push_back(client.identityFile);
+                }
+                sshArgs.push_back(client.sshTarget());
+                sshArgs.push_back(remoteCommand);
 
                 std::vector<char*> argv;
                 argv.reserve(sshArgs.size() + 1);
@@ -625,7 +643,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
 
                 execvp(argv[0], argv.data());
                 childExitWithError(
-                    "execvp failed for ssh client '" + client.raw + "': " + std::string(std::strerror(errno)) + "\n",
+                    "execvp failed for ssh client '" + client.clientId() + "': " + std::string(std::strerror(errno)) + "\n",
                     127
                 );
             }
@@ -634,7 +652,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
             worker.logPid = pid;
             Logger::getInstance().log(
                 LogLevel::INFO,
-                LogContext{pid, context.sessionId, client.raw, "ssh " + client.raw + " " + remoteCommand},
+                LogContext{pid, context.sessionId, client.clientId(), "ssh " + client.clientId() + " " + remoteCommand},
                 "Remote SSH worker created"
             );
 
@@ -696,7 +714,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                         (void)kill(-worker.pid, SIGKILL);
                         Logger::getInstance().log(
                             LogLevel::ERROR,
-                            LogContext{worker.logPid, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            LogContext{worker.logPid, context.sessionId, worker.client.clientId(), "ssh " + worker.client.clientId() + " " + remoteCommand},
                             "Remote SSH worker timed out; sent SIGKILL to process group"
                         );
                     }
@@ -711,7 +729,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                 int& targetFd = isStdout ? worker.stdoutPipe[0] : worker.stderrPipe[0];
 
                 if ((pollFds[index].revents & (POLLERR | POLLNVAL)) != 0) {
-                    throw std::runtime_error("poll reported invalid pipe state for client " + worker.client.raw);
+                    throw std::runtime_error("poll reported invalid pipe state for client " + worker.client.clientId());
                 }
 
                 if ((pollFds[index].revents & (POLLIN | POLLHUP)) != 0) {
@@ -725,7 +743,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                     if (targetOutput.size() > before) {
                         Logger::getInstance().log(
                             LogLevel::DEBUG,
-                            LogContext{worker.logPid, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            LogContext{worker.logPid, context.sessionId, worker.client.clientId(), "ssh " + worker.client.clientId() + " " + remoteCommand},
                             "Read " + std::to_string(targetOutput.size() - before) +
                                 (isStdout ? " bytes from remote stdout" : " bytes from remote stderr")
                         );
@@ -740,12 +758,12 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
                         worker.childExited = true;
                         Logger::getInstance().log(
                             LogLevel::DEBUG,
-                            LogContext{waitResult, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            LogContext{waitResult, context.sessionId, worker.client.clientId(), "ssh " + worker.client.clientId() + " " + remoteCommand},
                             "Remote SSH worker reaped with waitpid"
                         );
                         worker.pid = -1;
                     } else if (waitResult == -1) {
-                        throw std::runtime_error("waitpid failed for client " + worker.client.raw + ": " + std::string(std::strerror(errno)));
+                        throw std::runtime_error("waitpid failed for client " + worker.client.clientId() + ": " + std::string(std::strerror(errno)));
                     }
                 }
             }
@@ -765,7 +783,7 @@ ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEnt
             }
 
             clientResults.push_back(ClientResult{
-                worker.client.raw,
+                worker.client.clientId(),
                 exitCode,
                 std::move(worker.stdoutData),
                 std::move(worker.stderrData),

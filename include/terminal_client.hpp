@@ -5,6 +5,9 @@
 #include <functional>
 #include <mutex>
 
+#include "client_manager.hpp"
+#include "process_manager.hpp"
+
 class TerminalClient {
 public:
     TerminalClient();
@@ -16,12 +19,18 @@ private:
     std::vector<std::string> history;
     bool running;
     std::mutex outputMutex;
+    ClientManager clientManager;
 
     void printPrompt();
     void printColored(const std::string& msg, const std::string& color);
     void handleCommand(const std::string& command);
+    bool handleClientCommand(const std::string& command);
     void printError(const std::string& msg);
     void printHistory();
+    void printHelp();
+    void printClients();
+    void printStatusTable();
+    void refreshClientStatuses(const std::vector<ProcessManager::ClientResult>& clientResults);
     void handleExit();
 
     // Color codes

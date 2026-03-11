@@ -3,6 +3,7 @@ find_package(Threads REQUIRED)
 # Main library target
 add_library(remote_command_lib
     client_config.cpp
+    client_manager.cpp
     ipc_engine.cpp
     process_manager.cpp
     command_executor.cpp

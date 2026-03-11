@@ -6,12 +6,14 @@
 
 #include "client_config.hpp"
 #include "logger.hpp"
+#include "process_manager.hpp"
 
 struct CommandResult {
     int exitCode;
     std::string stdoutData;
     std::string stderrData;
     bool timedOut;
+    std::vector<ProcessManager::ClientResult> clientResults;
 };
 
 class CommandExecutor {
@@ -32,6 +34,11 @@ public:
                           const std::string& sessionId = "-",
                           OutputCallback streamCallback = nullptr,
                           int timeoutSec = 0);
+    CommandResult executeOnClients(const std::string& command,
+                                   const std::vector<ClientEntry>& clients,
+                                   const std::string& sessionId = "-",
+                                   OutputCallback streamCallback = nullptr,
+                                   int timeoutSec = 0);
 
 private:
     void validateCommand(const std::vector<std::string>& args);
@@ -40,6 +47,16 @@ private:
     bool isAllowedArgument(const std::string& argument) const;
     std::string buildRemoteCommand(const std::vector<std::string>& args) const;
     std::vector<ClientEntry> loadConfiguredClients() const;
+    CommandResult executeRemoteCommand(const std::string& command,
+                                       const std::vector<ClientEntry>& clients,
+                                       const std::string& sessionId,
+                                       OutputCallback streamCallback,
+                                       int timeoutSec);
+    CommandResult executeRemoteCommand(const std::vector<std::string>& args,
+                                       const std::vector<ClientEntry>& clients,
+                                       LogContext context,
+                                       OutputCallback streamCallback,
+                                       int timeoutSec);
 
     // Internal helpers
     CommandResult runCommand(const std::vector<std::string>& args,
