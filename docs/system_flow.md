@@ -18,7 +18,7 @@ This document describes what happens from user command entry to child process co
 
 `TerminalClient::run()`:
 
-- prints `remote-shell>`
+- prints `cmd>`
 - reads a line from stdin
 - handles `exit`, `quit`, or `history`
 - forwards other commands for execution

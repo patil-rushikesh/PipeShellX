@@ -20,7 +20,7 @@ add_executable(remote_command_app
     main.cpp
     terminal_client.cpp
 )
-set_target_properties(remote_command_app PROPERTIES OUTPUT_NAME pipeshell)
+set_target_properties(remote_command_app PROPERTIES OUTPUT_NAME PipeShellX)
 
 target_link_libraries(remote_command_app PRIVATE remote_command_lib)
 

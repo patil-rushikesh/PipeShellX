@@ -1,8 +1,8 @@
-# Remote Command Execution System
+# PipeShellX
 
 ## Description
 
-Remote Command Execution System is a C++ systems programming project that demonstrates how operating system primitives can be used to build a controlled command execution workflow.
+PipeShellX is a C++ systems programming project that demonstrates how operating system primitives can be used to build a controlled command execution workflow.
 
 The project focuses on low-level process execution using:
 
@@ -94,7 +94,7 @@ make -j
 The executable will be generated at:
 
 ```bash
-build/bin/pipeshell
+build/bin/PipeShellX
 ```
 
 ## Usage
@@ -102,7 +102,7 @@ build/bin/pipeshell
 Run the interactive client:
 
 ```bash
-./build/bin/pipeshell
+./build/bin/PipeShellX
 ```
 
 At the prompt, enter an allowed command:
@@ -133,7 +133,7 @@ user@192.168.1.12
 Then run the shell normally:
 
 ```bash
-./build/bin/pipeshell
+./build/bin/PipeShellX
 ```
 
 When `clients.txt` is present, an entered command is executed on all configured clients in parallel over SSH.

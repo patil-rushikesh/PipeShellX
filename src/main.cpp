@@ -6,7 +6,7 @@
 
 int main() {
     try {
-        Logger::getInstance().log(LogLevel::INFO, "Starting remote command terminal client");
+        Logger::getInstance().log(LogLevel::INFO, "Starting PipeShellX terminal client");
         TerminalClient client;
         client.run();
         return 0;

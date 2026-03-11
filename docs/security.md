@@ -113,7 +113,7 @@ The child inherits the parent environment. Although executable resolution is con
 
 ### No User Separation
 
-The current application assumes the permissions of the user running `remote_command_app`. It does not implement:
+The current application assumes the permissions of the user running `PipeShellX`. It does not implement:
 
 - privilege dropping
 - chroot jail

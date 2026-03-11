@@ -47,7 +47,7 @@ Implementation:
 For a command entered at the terminal:
 
 ```text
-remote-shell> whoami
+cmd> whoami
 ```
 
 the distributed execution layer transforms it into one SSH command per client:

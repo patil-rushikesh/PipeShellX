@@ -35,7 +35,7 @@ make -j
 The build produces:
 
 - library target: `remote_command_lib`
-- executable: `build/bin/pipeshell`
+- executable: `build/bin/PipeShellX`
 
 ## Compiler Settings
 
@@ -53,7 +53,7 @@ These flags are enforced via the top-level CMake configuration.
 From the project root:
 
 ```bash
-./build/bin/pipeshell
+./build/bin/PipeShellX
 ```
 
 Sample interactive session:
@@ -77,7 +77,7 @@ user@192.168.1.11
 Run:
 
 ```bash
-./build/bin/pipeshell
+./build/bin/PipeShellX
 ```
 
 Example usage:
