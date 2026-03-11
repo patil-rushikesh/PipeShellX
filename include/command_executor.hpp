@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 
+#include "client_config.hpp"
 #include "logger.hpp"
 
 struct CommandResult {
@@ -37,6 +38,8 @@ private:
     std::vector<std::string> parseCommand(const std::string& command);
     std::string resolveExecutablePath(const std::string& commandName) const;
     bool isAllowedArgument(const std::string& argument) const;
+    std::string buildRemoteCommand(const std::vector<std::string>& args) const;
+    std::vector<ClientEntry> loadConfiguredClients() const;
 
     // Internal helpers
     CommandResult runCommand(const std::vector<std::string>& args,

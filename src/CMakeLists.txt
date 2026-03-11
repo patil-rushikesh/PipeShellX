@@ -2,6 +2,7 @@ find_package(Threads REQUIRED)
 
 # Main library target
 add_library(remote_command_lib
+    client_config.cpp
     ipc_engine.cpp
     process_manager.cpp
     command_executor.cpp
@@ -19,6 +20,7 @@ add_executable(remote_command_app
     main.cpp
     terminal_client.cpp
 )
+set_target_properties(remote_command_app PROPERTIES OUTPUT_NAME pipeshell)
 
 target_link_libraries(remote_command_app PRIVATE remote_command_lib)
 

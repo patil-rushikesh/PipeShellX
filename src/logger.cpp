@@ -53,7 +53,7 @@ std::string Logger::levelToString(LogLevel level) const {
 }
 
 void Logger::log(LogLevel level, const std::string& msg) {
-    log(level, LogContext{getpid(), "-", "-"}, msg);
+    log(level, LogContext{getpid(), "-", "-", "-"}, msg);
 }
 
 void Logger::log(LogLevel level, const LogContext& context, const std::string& msg) {
@@ -63,6 +63,7 @@ void Logger::log(LogLevel level, const LogContext& context, const std::string& m
               << "[" << levelToString(level) << "] "
               << "[pid=" << context.pid << "] "
               << "[session=" << (context.sessionId.empty() ? "-" : context.sessionId) << "] "
+              << "[client=" << (context.clientId.empty() ? "-" : context.clientId) << "] "
               << "[command=" << (context.command.empty() ? "-" : context.command) << "] "
               << msg;
     const std::string logMsg = formatted.str();

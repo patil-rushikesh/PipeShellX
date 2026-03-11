@@ -12,7 +12,7 @@ TerminalClient::TerminalClient() : running(true) {}
 TerminalClient::~TerminalClient() {}
 
 void TerminalClient::printPrompt() {
-    printColored("remote-shell> ", COLOR_GREEN);
+    printColored("cmd> ", COLOR_GREEN);
 }
 
 void TerminalClient::printColored(const std::string& msg, const std::string& color) {
@@ -69,7 +69,7 @@ void TerminalClient::handleCommand(const std::string& command) {
         } catch (const std::exception& ex) {
             Logger::getInstance().log(
                 LogLevel::ERROR,
-                LogContext{getpid(), sessionId, command},
+                LogContext{getpid(), sessionId, "-", command},
                 std::string("Interactive command failed: ") + ex.what()
             );
             printError(ex.what());

@@ -6,15 +6,26 @@
 #include <sys/types.h>
 #include <signal.h>
 
+#include "client_config.hpp"
 #include "logger.hpp"
 
 class ProcessManager {
 public:
+    struct ClientResult {
+        std::string clientId;
+        int exitCode;
+        std::string stdoutData;
+        std::string stderrData;
+        std::string errorMessage;
+        bool timedOut;
+    };
+
     struct Result {
         int exitCode;
         std::string stdoutData;
         std::string stderrData;
         bool timedOut;
+        std::vector<ClientResult> clientResults;
     };
 
     ProcessManager();
@@ -31,6 +42,10 @@ public:
                    const LogContext& context,
                    const std::string& input = "",
                    int timeoutSec = 0);
+    Result executeRemote(const std::vector<ClientEntry>& clients,
+                         const std::string& remoteCommand,
+                         const LogContext& context,
+                         int timeoutSec = 0);
 
 private:
     pid_t childPid;
@@ -48,4 +63,6 @@ private:
     // Internal helpers
     bool readAvailableData(int fd, std::string& output, bool& closed);
     bool writeAvailableData(int fd, const std::string& input, std::size_t& written, bool& closed);
+    std::string formatClientResults(const std::vector<ClientResult>& clientResults, bool useStdout) const;
+    std::string classifyRemoteError(const ClientResult& clientResult) const;
 };

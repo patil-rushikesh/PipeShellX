@@ -35,7 +35,7 @@ make -j
 The build produces:
 
 - library target: `remote_command_lib`
-- executable: `build/bin/remote_command_app`
+- executable: `build/bin/pipeshell`
 
 ## Compiler Settings
 
@@ -53,17 +53,42 @@ These flags are enforced via the top-level CMake configuration.
 From the project root:
 
 ```bash
-./build/bin/remote_command_app
+./build/bin/pipeshell
 ```
 
 Sample interactive session:
 
 ```text
-remote-shell> pwd
-remote-shell> whoami
-remote-shell> echo hello
-remote-shell> exit
+cmd> pwd
+cmd> whoami
+cmd> echo hello
+cmd> exit
 ```
+
+## Distributed Deployment Example
+
+Create a `clients.txt` file next to the executable launch directory:
+
+```text
+user@192.168.1.10
+user@192.168.1.11
+```
+
+Run:
+
+```bash
+./build/bin/pipeshell
+```
+
+Example usage:
+
+```text
+cmd> uptime
+cmd> hostname
+cmd> df -h
+```
+
+When `clients.txt` is present, these commands are executed on all configured clients in parallel over SSH.
 
 ## Logging
 

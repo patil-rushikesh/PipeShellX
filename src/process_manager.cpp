@@ -19,8 +19,25 @@
 #include <vector>
 #include <algorithm>
 #include <mutex>
+#include <utility>
+#include <cctype>
 
 namespace {
+
+struct RemoteWorkerState {
+    ClientEntry client;
+    pid_t pid = -1;
+    pid_t logPid = -1;
+    std::array<int, 2> stdoutPipe{-1, -1};
+    std::array<int, 2> stderrPipe{-1, -1};
+    std::string stdoutData;
+    std::string stderrData;
+    bool stdoutClosed = false;
+    bool stderrClosed = false;
+    bool childExited = false;
+    bool timedOut = false;
+    int status = 0;
+};
 
 void closeFd(int& fd) {
     if (fd != -1) {
@@ -28,6 +45,11 @@ void closeFd(int& fd) {
         }
         fd = -1;
     }
+}
+
+void closePipePair(std::array<int, 2>& pipePair) {
+    closeFd(pipePair[0]);
+    closeFd(pipePair[1]);
 }
 
 [[noreturn]] void childExitWithError(const std::string& message, int code) {
@@ -247,6 +269,72 @@ bool ProcessManager::writeAvailableData(int fd,
     return true;
 }
 
+std::string ProcessManager::formatClientResults(const std::vector<ClientResult>& clientResults, bool useStdout) const {
+    std::string formatted;
+    for (const auto& result : clientResults) {
+        const std::string& selectedOutput = useStdout ? result.stdoutData : result.errorMessage;
+        if (selectedOutput.empty()) {
+            continue;
+        }
+
+        formatted += "CLIENT " + result.clientId + "\n";
+        formatted += selectedOutput;
+        if (formatted.back() != '\n') {
+            formatted += '\n';
+        }
+    }
+    return formatted;
+}
+
+std::string ProcessManager::classifyRemoteError(const ClientResult& clientResult) const {
+    if (clientResult.timedOut) {
+        return "ERROR: command timed out";
+    }
+
+    auto containsInsensitive = [](const std::string& text, const std::string& needle) {
+        auto toLower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+        std::string lowerText;
+        lowerText.reserve(text.size());
+        for (char c : text) {
+            lowerText.push_back(toLower(static_cast<unsigned char>(c)));
+        }
+
+        std::string lowerNeedle;
+        lowerNeedle.reserve(needle.size());
+        for (char c : needle) {
+            lowerNeedle.push_back(toLower(static_cast<unsigned char>(c)));
+        }
+
+        return lowerText.find(lowerNeedle) != std::string::npos;
+    };
+
+    const std::string& stderrText = clientResult.stderrData;
+    if (containsInsensitive(stderrText, "could not resolve hostname") ||
+        containsInsensitive(stderrText, "name or service not known") ||
+        containsInsensitive(stderrText, "temporary failure in name resolution")) {
+        return "ERROR: unreachable host";
+    }
+
+    if (containsInsensitive(stderrText, "connection refused") ||
+        containsInsensitive(stderrText, "connection timed out") ||
+        containsInsensitive(stderrText, "no route to host") ||
+        containsInsensitive(stderrText, "operation not permitted") ||
+        containsInsensitive(stderrText, "connection reset") ||
+        containsInsensitive(stderrText, "connection closed")) {
+        return "ERROR: connection failed";
+    }
+
+    if (containsInsensitive(stderrText, "permission denied")) {
+        return "ERROR: authentication failed";
+    }
+
+    if (clientResult.exitCode != 0) {
+        return "ERROR: command failed with exit code " + std::to_string(clientResult.exitCode);
+    }
+
+    return {};
+}
+
 ProcessManager::Result ProcessManager::execute(const std::vector<std::string>& args,
                                                const LogContext& context,
                                                const std::string& input,
@@ -299,7 +387,7 @@ ProcessManager::Result ProcessManager::execute(const std::vector<std::string>& a
 
     Logger::getInstance().log(
         LogLevel::INFO,
-        LogContext{childPid, context.sessionId, context.command},
+        LogContext{childPid, context.sessionId, context.clientId, context.command},
         "Child process created"
     );
 
@@ -422,7 +510,7 @@ ProcessManager::Result ProcessManager::execute(const std::vector<std::string>& a
                     childExited = true;
                     Logger::getInstance().log(
                         LogLevel::DEBUG,
-                        LogContext{waitResult, context.sessionId, context.command},
+                        LogContext{waitResult, context.sessionId, context.clientId, context.command},
                         "Child process reaped with waitpid"
                     );
                     childPid = -1;
@@ -440,11 +528,272 @@ ProcessManager::Result ProcessManager::execute(const std::vector<std::string>& a
             "IPC collection completed: stdout=" + std::to_string(stdoutData.size()) +
                 " bytes, stderr=" + std::to_string(stderrData.size()) + " bytes"
         );
-        return Result{exitCode, std::move(stdoutData), std::move(stderrData), timedOut};
+        return Result{exitCode, std::move(stdoutData), std::move(stderrData), timedOut, {}};
     } catch (...) {
         Logger::getInstance().log(LogLevel::ERROR, context, "Process execution failed; cleaning up child and pipes");
         reapChild(true);
         closePipes();
+        throw;
+    }
+}
+
+ProcessManager::Result ProcessManager::executeRemote(const std::vector<ClientEntry>& clients,
+                                                     const std::string& remoteCommand,
+                                                     const LogContext& context,
+                                                     int timeoutSec) {
+    if (clients.empty()) {
+        throw std::runtime_error("no clients configured for remote execution");
+    }
+
+    std::vector<RemoteWorkerState> workers;
+    workers.reserve(clients.size());
+
+    auto cleanupWorkers = [&]() noexcept {
+        for (auto& worker : workers) {
+            closePipePair(worker.stdoutPipe);
+            closePipePair(worker.stderrPipe);
+            if (worker.pid > 0) {
+                (void)kill(-worker.pid, SIGKILL);
+                while (waitpid(worker.pid, &worker.status, 0) == -1 && errno == EINTR) {
+                }
+                worker.pid = -1;
+            }
+        }
+    };
+
+    try {
+        for (const auto& client : clients) {
+            RemoteWorkerState worker;
+            worker.client = client;
+
+            if (pipe(worker.stdoutPipe.data()) == -1) {
+                throw std::runtime_error("stdout pipe creation failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+            }
+            if (pipe(worker.stderrPipe.data()) == -1) {
+                closePipePair(worker.stdoutPipe);
+                throw std::runtime_error("stderr pipe creation failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+            }
+
+            const pid_t pid = fork();
+            if (pid == -1) {
+                closePipePair(worker.stdoutPipe);
+                closePipePair(worker.stderrPipe);
+                throw std::runtime_error("fork() failed for " + client.raw + ": " + std::string(std::strerror(errno)));
+            }
+
+            if (pid == 0) {
+                for (auto& existingWorker : workers) {
+                    closePipePair(existingWorker.stdoutPipe);
+                    closePipePair(existingWorker.stderrPipe);
+                }
+
+                if (setpgid(0, 0) == -1) {
+                    childExitWithError("setpgid failed: " + std::string(std::strerror(errno)) + "\n", 126);
+                }
+
+                int nullFd = open("/dev/null", O_RDONLY);
+                if (nullFd == -1) {
+                    childExitWithError("open(/dev/null) failed: " + std::string(std::strerror(errno)) + "\n", 126);
+                }
+
+                if (dup2(nullFd, STDIN_FILENO) == -1 ||
+                    dup2(worker.stdoutPipe[1], STDOUT_FILENO) == -1 ||
+                    dup2(worker.stderrPipe[1], STDERR_FILENO) == -1) {
+                    childExitWithError("dup2 failed: " + std::string(std::strerror(errno)) + "\n", 126);
+                }
+
+                closeFd(nullFd);
+                closePipePair(worker.stdoutPipe);
+                closePipePair(worker.stderrPipe);
+
+                std::vector<std::string> sshArgs = {
+                    "/usr/bin/ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    client.raw,
+                    remoteCommand
+                };
+
+                std::vector<char*> argv;
+                argv.reserve(sshArgs.size() + 1);
+                for (auto& arg : sshArgs) {
+                    argv.push_back(arg.data());
+                }
+                argv.push_back(nullptr);
+
+                execvp(argv[0], argv.data());
+                childExitWithError(
+                    "execvp failed for ssh client '" + client.raw + "': " + std::string(std::strerror(errno)) + "\n",
+                    127
+                );
+            }
+
+            worker.pid = pid;
+            worker.logPid = pid;
+            Logger::getInstance().log(
+                LogLevel::INFO,
+                LogContext{pid, context.sessionId, client.raw, "ssh " + client.raw + " " + remoteCommand},
+                "Remote SSH worker created"
+            );
+
+            closeFd(worker.stdoutPipe[1]);
+            closeFd(worker.stderrPipe[1]);
+            setNonBlocking(worker.stdoutPipe[0]);
+            setNonBlocking(worker.stderrPipe[0]);
+            workers.push_back(std::move(worker));
+        }
+
+        const auto deadline = timeoutSec > 0
+            ? std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec)
+            : std::chrono::steady_clock::time_point::max();
+
+        bool anyTimedOut = false;
+
+        while (true) {
+            bool allComplete = true;
+            std::vector<pollfd> pollFds;
+            std::vector<std::pair<std::size_t, bool>> pollMap;
+
+            for (std::size_t index = 0; index < workers.size(); ++index) {
+                auto& worker = workers[index];
+                if (!worker.childExited || !worker.stdoutClosed || !worker.stderrClosed) {
+                    allComplete = false;
+                }
+                if (!worker.stdoutClosed && worker.stdoutPipe[0] != -1) {
+                    pollFds.push_back(pollfd{worker.stdoutPipe[0], POLLIN | POLLHUP, 0});
+                    pollMap.emplace_back(index, true);
+                }
+                if (!worker.stderrClosed && worker.stderrPipe[0] != -1) {
+                    pollFds.push_back(pollfd{worker.stderrPipe[0], POLLIN | POLLHUP, 0});
+                    pollMap.emplace_back(index, false);
+                }
+            }
+
+            if (allComplete) {
+                break;
+            }
+
+            int pollTimeoutMs = calculatePollTimeoutMs(deadline);
+            if (pollFds.empty()) {
+                pollTimeoutMs = pollTimeoutMs == -1 ? 50 : std::min(pollTimeoutMs, 50);
+            }
+
+            const int pollResult = poll(pollFds.data(), static_cast<nfds_t>(pollFds.size()), pollTimeoutMs);
+            if (pollResult == -1) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                throw std::runtime_error("poll failed during remote execution: " + std::string(std::strerror(errno)));
+            }
+
+            if (pollResult == 0 && deadline != std::chrono::steady_clock::time_point::max()) {
+                anyTimedOut = true;
+                for (auto& worker : workers) {
+                    if (!worker.childExited && worker.pid > 0) {
+                        worker.timedOut = true;
+                        (void)kill(-worker.pid, SIGKILL);
+                        Logger::getInstance().log(
+                            LogLevel::ERROR,
+                            LogContext{worker.logPid, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            "Remote SSH worker timed out; sent SIGKILL to process group"
+                        );
+                    }
+                }
+            }
+
+            for (std::size_t index = 0; index < pollFds.size(); ++index) {
+                const auto [workerIndex, isStdout] = pollMap[index];
+                auto& worker = workers[workerIndex];
+                auto& targetOutput = isStdout ? worker.stdoutData : worker.stderrData;
+                auto& targetClosed = isStdout ? worker.stdoutClosed : worker.stderrClosed;
+                int& targetFd = isStdout ? worker.stdoutPipe[0] : worker.stderrPipe[0];
+
+                if ((pollFds[index].revents & (POLLERR | POLLNVAL)) != 0) {
+                    throw std::runtime_error("poll reported invalid pipe state for client " + worker.client.raw);
+                }
+
+                if ((pollFds[index].revents & (POLLIN | POLLHUP)) != 0) {
+                    const std::size_t before = targetOutput.size();
+                    if (readAvailableData(targetFd, targetOutput, targetClosed) && targetClosed) {
+                        closeFd(targetFd);
+                    } else if (targetClosed) {
+                        closeFd(targetFd);
+                    }
+
+                    if (targetOutput.size() > before) {
+                        Logger::getInstance().log(
+                            LogLevel::DEBUG,
+                            LogContext{worker.logPid, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            "Read " + std::to_string(targetOutput.size() - before) +
+                                (isStdout ? " bytes from remote stdout" : " bytes from remote stderr")
+                        );
+                    }
+                }
+            }
+
+            for (auto& worker : workers) {
+                if (!worker.childExited && worker.pid > 0) {
+                    const pid_t waitResult = waitpid(worker.pid, &worker.status, WNOHANG);
+                    if (waitResult == worker.pid) {
+                        worker.childExited = true;
+                        Logger::getInstance().log(
+                            LogLevel::DEBUG,
+                            LogContext{waitResult, context.sessionId, worker.client.raw, "ssh " + worker.client.raw + " " + remoteCommand},
+                            "Remote SSH worker reaped with waitpid"
+                        );
+                        worker.pid = -1;
+                    } else if (waitResult == -1) {
+                        throw std::runtime_error("waitpid failed for client " + worker.client.raw + ": " + std::string(std::strerror(errno)));
+                    }
+                }
+            }
+        }
+
+        std::vector<ClientResult> clientResults;
+        clientResults.reserve(workers.size());
+        int overallExitCode = 0;
+
+        for (auto& worker : workers) {
+            closePipePair(worker.stdoutPipe);
+            closePipePair(worker.stderrPipe);
+
+            const int exitCode = WIFEXITED(worker.status) ? WEXITSTATUS(worker.status) : -1;
+            if (exitCode != 0 || worker.timedOut) {
+                overallExitCode = exitCode == 0 ? 1 : exitCode;
+            }
+
+            clientResults.push_back(ClientResult{
+                worker.client.raw,
+                exitCode,
+                std::move(worker.stdoutData),
+                std::move(worker.stderrData),
+                {},
+                worker.timedOut
+            });
+        }
+
+        for (auto& clientResult : clientResults) {
+            clientResult.errorMessage = classifyRemoteError(clientResult);
+            if (!clientResult.errorMessage.empty()) {
+                Logger::getInstance().log(
+                    LogLevel::ERROR,
+                    LogContext{context.pid, context.sessionId, clientResult.clientId, "ssh " + clientResult.clientId + " " + remoteCommand},
+                    clientResult.errorMessage
+                );
+            }
+        }
+
+        return Result{
+            overallExitCode,
+            formatClientResults(clientResults, true),
+            formatClientResults(clientResults, false),
+            anyTimedOut,
+            std::move(clientResults)
+        };
+    } catch (...) {
+        cleanupWorkers();
         throw;
     }
 }

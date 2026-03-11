@@ -1,6 +1,7 @@
 #include "command_executor.hpp"
 #include "process_manager.hpp"
 
+#include <filesystem>
 #include <sstream>
 #include <array>
 #include <cctype>
@@ -16,7 +17,7 @@ constexpr std::size_t kMaxArgumentLength = 256;
 
 const std::unordered_set<std::string_view>& allowedCommands() {
     static const std::unordered_set<std::string_view> commands = {
-        "ls", "cat", "echo", "pwd", "whoami", "date", "uptime", "df", "du", "ps", "top", "id"
+        "ls", "cat", "echo", "pwd", "whoami", "date", "uptime", "df", "du", "ps", "top", "id", "hostname"
     };
     return commands;
 }
@@ -28,6 +29,19 @@ const std::array<std::string_view, 2>& trustedExecutableDirs() {
 
 bool isVisibleAscii(char c) {
     return c >= 0x20 && c <= 0x7e;
+}
+
+std::string shellQuote(const std::string& value) {
+    std::string quoted = "'";
+    for (char c : value) {
+        if (c == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "'";
+    return quoted;
 }
 
 } // namespace
@@ -160,15 +174,93 @@ bool CommandExecutor::isAllowedArgument(const std::string& argument) const {
     return true;
 }
 
+std::string CommandExecutor::buildRemoteCommand(const std::vector<std::string>& args) const {
+    std::ostringstream remoteCommand;
+    for (std::size_t index = 0; index < args.size(); ++index) {
+        if (index != 0) {
+            remoteCommand << ' ';
+        }
+        remoteCommand << shellQuote(args[index]);
+    }
+    return remoteCommand.str();
+}
+
+std::vector<ClientEntry> CommandExecutor::loadConfiguredClients() const {
+    constexpr const char* kDefaultClientConfig = "clients.txt";
+    if (!std::filesystem::exists(kDefaultClientConfig)) {
+        return {};
+    }
+
+    ClientConfig config;
+    config.loadFromFile(kDefaultClientConfig);
+    return config.clients();
+}
+
 CommandResult CommandExecutor::execute(const std::string& command,
                                        const std::string& sessionId,
                                        OutputCallback streamCallback,
                                        int timeoutSec) {
-    LogContext context{getpid(), sessionId, command};
+    LogContext context{getpid(), sessionId, "-", command};
     Logger::getInstance().log(LogLevel::INFO, context, "Received command for execution");
 
     auto args = parseCommand(command);
     validateCommand(args);
+
+    const auto clients = loadConfiguredClients();
+    if (!clients.empty()) {
+        const std::string remoteCommand = buildRemoteCommand(args);
+        context.command = remoteCommand;
+        Logger::getInstance().log(
+            LogLevel::DEBUG,
+            context,
+            "Validated command and loaded " + std::to_string(clients.size()) + " remote clients"
+        );
+
+        ProcessManager pm;
+        Logger::getInstance().log(LogLevel::INFO, context, "Starting distributed SSH execution");
+        auto result = pm.executeRemote(clients, remoteCommand, context, timeoutSec);
+
+        if (streamCallback) {
+            for (const auto& clientResult : result.clientResults) {
+                const std::string header = "CLIENT " + clientResult.clientId;
+                streamCallback(header, true);
+                if (!clientResult.stdoutData.empty()) {
+                    std::size_t pos = 0;
+                    while (pos < clientResult.stdoutData.size()) {
+                        const std::size_t end = clientResult.stdoutData.find('\n', pos);
+                        if (end == std::string::npos) {
+                            streamCallback(clientResult.stdoutData.substr(pos), true);
+                            break;
+                        }
+                        streamCallback(clientResult.stdoutData.substr(pos, end - pos), true);
+                        pos = end + 1;
+                    }
+                }
+                if (!clientResult.errorMessage.empty()) {
+                    streamCallback(clientResult.errorMessage, false);
+                } else if (!clientResult.stderrData.empty()) {
+                    std::size_t pos = 0;
+                    while (pos < clientResult.stderrData.size()) {
+                        const std::size_t end = clientResult.stderrData.find('\n', pos);
+                        if (end == std::string::npos) {
+                            streamCallback(clientResult.stderrData.substr(pos), false);
+                            break;
+                        }
+                        streamCallback(clientResult.stderrData.substr(pos, end - pos), false);
+                        pos = end + 1;
+                    }
+                }
+            }
+        }
+
+        return CommandResult{
+            result.exitCode,
+            std::move(result.stdoutData),
+            std::move(result.stderrData),
+            result.timedOut
+        };
+    }
+
     args.front() = resolveExecutablePath(args.front());
     context.command = joinArgs(args);
     Logger::getInstance().log(LogLevel::DEBUG, context, "Validated command and resolved executable");

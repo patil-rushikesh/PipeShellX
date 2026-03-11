@@ -43,7 +43,7 @@ std::string SessionManager::startSession(const std::string& command, OutputCallb
 
     Logger::getInstance().log(
         LogLevel::INFO,
-        LogContext{0, session->sessionId, command},
+        LogContext{0, session->sessionId, "-", command},
         "Session created"
     );
 
@@ -62,7 +62,7 @@ void SessionManager::sessionWorker(std::shared_ptr<Session> session, const std::
     } catch (const std::exception& ex) {
         Logger::getInstance().log(
             LogLevel::ERROR,
-            LogContext{0, session->sessionId, command},
+            LogContext{0, session->sessionId, "-", command},
             std::string("Session worker failed: ") + ex.what()
         );
         std::lock_guard<std::mutex> lock(session->mutex);
@@ -72,7 +72,7 @@ void SessionManager::sessionWorker(std::shared_ptr<Session> session, const std::
     session->active = false;
     Logger::getInstance().log(
         LogLevel::INFO,
-        LogContext{0, session->sessionId, command},
+        LogContext{0, session->sessionId, "-", command},
         "Session completed"
     );
 }
@@ -94,7 +94,7 @@ bool SessionManager::endSession(const std::string& sessionId) {
     }
     Logger::getInstance().log(
         LogLevel::INFO,
-        LogContext{0, sessionId, "-"},
+        LogContext{0, sessionId, "-", "-"},
         "Session ended"
     );
     return true;

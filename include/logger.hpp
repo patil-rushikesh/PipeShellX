@@ -11,6 +11,7 @@ enum class LogLevel { INFO, DEBUG, ERROR };
 struct LogContext {
     pid_t pid;
     std::string sessionId;
+    std::string clientId;
     std::string command;
 };
 
