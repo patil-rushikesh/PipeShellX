@@ -149,6 +149,19 @@ Important output behavior:
 
 Run `pipeshellx --help` for the complete command synopsis.
 
+## Contributing
+
+Contributions are welcome. Start with a
+[`good first issue`](https://github.com/patil-rushikesh/PipeShellX/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)
+or a [`help wanted`](https://github.com/patil-rushikesh/PipeShellX/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)
+task, or propose a focused change through the
+[issue chooser](https://github.com/patil-rushikesh/PipeShellX/issues/new/choose).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, test commands, pull-request
+expectations, and the required CI checks. Use
+[GitHub Discussions](https://github.com/patil-rushikesh/PipeShellX/discussions)
+for setup and usage questions. Report vulnerabilities privately through
+[SECURITY.md](SECURITY.md), not through a public issue.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -159,6 +172,7 @@ Run `pipeshellx --help` for the complete command synopsis.
 - [Benchmarks](docs/benchmarks.md)
 - [Roadmap](ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 

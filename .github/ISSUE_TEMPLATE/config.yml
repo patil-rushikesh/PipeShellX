@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/patil-rushikesh/PipeShellX/security/advisories/new
+    about: Report suspected vulnerabilities privately; never disclose them in a public issue.
+  - name: Ask a question or get help
+    url: https://github.com/patil-rushikesh/PipeShellX/discussions
+    about: Use GitHub Discussions for setup help, usage questions, and design conversations.
+  - name: Read the contribution guide
+    url: https://github.com/patil-rushikesh/PipeShellX/blob/main/CONTRIBUTING.md
+    about: Review setup, testing, portability, documentation, and pull-request expectations.

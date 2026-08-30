@@ -1,0 +1,140 @@
+name: Bug report
+description: Report reproducible behavior that is incorrect or unexpected.
+title: "[Bug]: "
+labels:
+  - bug
+  - needs triage
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve PipeShellX. Search existing issues before reporting a duplicate.
+
+        **Do not disclose vulnerabilities or secrets here.** Follow the [security policy](https://github.com/patil-rushikesh/PipeShellX/blob/main/SECURITY.md) for private vulnerability reporting, and remove credentials, private hostnames, certificate material, and sensitive command output from reproductions.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Select the area that best matches the problem.
+      options:
+        - CLI and command parsing
+        - Inventory and host management
+        - SSH transport
+        - Native mTLS transport or node
+        - Pipelines and local process runtime
+        - Output, capture, or audit records
+        - Build, installation, or packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PipeShellX version or commit
+      description: Run `pipeshellx --version` and include the Git commit when building from source.
+      placeholder: "0.6.0 / abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: controller_os
+    attributes:
+      label: Controller platform
+      description: Linux and macOS are supported controller platforms; identify unsupported environments explicitly.
+      options:
+        - Linux
+        - macOS
+        - Other or unsupported
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment details
+      description: Include OS version, CPU architecture, compiler and version, CMake version, and OpenSSL version when relevant.
+      placeholder: "Ubuntu 24.04 x86_64; Clang 18; CMake 3.30; OpenSSL 3.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Execution or transport mode
+      options:
+        - Local execution
+        - SSH
+        - Native mTLS
+        - Mixed pipeline
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Explain what went wrong and how it affects you.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest safe sequence of commands, configuration, or code that reproduces the problem.
+      placeholder: |
+        1. Configure with `cmake ...`
+        2. Run `pipeshellx ...`
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the result you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe the result you observed, including exit status when relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or output
+      description: Paste only the relevant output after removing credentials, private hosts, keys, certificates, tokens, and sensitive command data.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other context, suspected regression commit, or safe sample files.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched the existing issues and did not find a matching report.
+          required: true
+        - label: I included the exact version or commit and enough information to reproduce the problem.
+          required: true
+        - label: I removed credentials and other sensitive information from this report.
+          required: true
+        - label: This is not a suspected security vulnerability; those reports follow `SECURITY.md` privately.
+          required: true
+        - label: I agree to follow the repository's Code of Conduct.
+          required: true

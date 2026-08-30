@@ -4,6 +4,28 @@ Thank you for improving PipeShellX. Contributions should keep command
 execution predictable, portable, testable, and honest about its trust and
 platform boundaries.
 
+## Find and scope work
+
+Search the [open issues](https://github.com/patil-rushikesh/PipeShellX/issues)
+and [pull requests](https://github.com/patil-rushikesh/PipeShellX/pulls) before
+starting. Work selected for new contributors is labeled
+[`good first issue`](https://github.com/patil-rushikesh/PipeShellX/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22);
+tasks needing contributors are labeled
+[`help wanted`](https://github.com/patil-rushikesh/PipeShellX/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22).
+Comment on an issue before starting so work is not duplicated.
+
+Use [GitHub Discussions](https://github.com/patil-rushikesh/PipeShellX/discussions)
+for setup help, usage questions, and early design conversations. Keep issues
+focused on reproducible bugs or concrete, actionable work.
+
+The [roadmap](ROADMAP.md) contains broad goals, not ready-to-implement tasks.
+For a feature, public API or protocol change, new dependency, platform claim,
+or other substantial change, [open an issue](https://github.com/patil-rushikesh/PipeShellX/issues/new/choose)
+and agree on a focused scope first. Obvious bug fixes, tests, and small
+documentation corrections may go directly to a pull request. Suspected
+vulnerabilities are the exception: report them privately as described in
+[SECURITY.md](SECURITY.md).
+
 ## Set up a development build
 
 You need CMake 3.20 or newer, a C++20 compiler, and Ninja or Make. The default
@@ -45,6 +67,9 @@ and CI commands.
 
 ## Make changes
 
+Create a topic branch from the latest `main`; do not develop directly on the
+protected branch. Keep each branch and pull request focused on one problem.
+
 - Add or update a focused regression test for behavior changes. Tests must not
   depend on the caller's working directory, environment, real fleet, or
   external network.
@@ -57,6 +82,10 @@ and CI commands.
   explain new findings.
 - Update public documentation whenever a command, option, output schema,
   security boundary, platform claim, or packaging contract changes.
+- Update `THIRD_PARTY_NOTICES.md` when adding or changing a distributed
+  dependency, and verify that its license is compatible with Apache-2.0.
+- Pin third-party GitHub Actions to immutable commit SHAs and run `actionlint`
+  when changing workflows.
 
 ## Preserve layering and portability
 
@@ -86,11 +115,12 @@ At minimum:
 
 ```bash
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure --timeout 120
 ./scripts/check_layering.sh
 ./scripts/check_docs.py
 ./build/bin/pipeshellx --version
 ./build/bin/pipeshellx --help
+git diff --check
 ```
 
 For process, pipe, socket, TLS, cancellation, or concurrency changes, also run
@@ -104,14 +134,30 @@ cmake --build build-asan --parallel
 ctest --test-dir build-asan --output-on-failure
 ```
 
-Pull requests should be narrow enough to review and should explain the user
-impact, supported platforms, tests run, and any known limitation. Before
-submitting, verify that:
+Hosted CI repeats the suite across Linux GCC, Linux Clang, and macOS
+AppleClang, validates installation and the downstream CMake package, exercises
+the SSH-only build, and runs ASan+UBSan. The protected `main` branch requires
+the aggregate `Required CI` check and CodeQL's `Analyze C/C++` check to pass on
+the latest commit. Every update to `main` must use a pull request, and all
+review threads must be resolved before merge.
+
+## Open a pull request
+
+Push your topic branch to your fork and open a pull request against `main`.
+Complete the pull-request template, link the issue with `Closes #123` when
+appropriate, and include the exact commands and platforms you tested. Draft
+pull requests are welcome when early implementation feedback would prevent
+wasted work.
+
+Pull requests should be narrow enough to review and explain the user impact,
+supported platforms, security or compatibility implications, and any known
+limitation. Before submitting, verify that:
 
 - tests cover the changed behavior and pass locally;
 - touched files are formatted and warning-clean;
 - layering and sanitizer checks relevant to the change pass;
-- documentation and changelog entries match the implementation;
+- documentation and, for user-visible changes, changelog entries match the
+  implementation;
 - the diff contains no credentials, private hostnames, audit output, generated
   inventories, build artifacts, or local absolute paths.
 
@@ -121,6 +167,10 @@ Conventional Commit subjects are preferred, for example:
 fix(transport): preserve stderr channel attribution
 ```
 
+Keep review discussion attached to the pull request and add follow-up commits
+instead of hiding review history. A maintainer merges only after review is
+resolved and the required checks pass.
+
 ## Security reports
 
 Do not disclose suspected vulnerabilities in a public pull request or issue.
@@ -129,10 +179,7 @@ and supported versions.
 
 ## Respectful conduct
 
-Be constructive, specific, and respectful. Focus criticism on code and ideas;
-do not harass, insult, discriminate against, or expose private information
-about another participant. Maintainers may edit or remove abusive content and
-restrict participation when necessary to keep collaboration safe.
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

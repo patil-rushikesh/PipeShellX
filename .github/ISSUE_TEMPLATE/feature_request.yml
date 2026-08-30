@@ -1,0 +1,106 @@
+name: Feature request
+description: Propose an improvement grounded in a concrete user need.
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs triage
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for proposing an improvement. Please search existing issues and review the [roadmap](https://github.com/patil-rushikesh/PipeShellX/blob/main/ROADMAP.md) first. PipeShellX currently supports Linux and macOS controllers and native nodes; Windows is supported only as an SSH target through Win32-OpenSSH.
+
+        Do not include vulnerability details or secrets. Follow the [security policy](https://github.com/patil-rushikesh/PipeShellX/blob/main/SECURITY.md) for private vulnerability reporting.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI and user experience
+        - Inventory and host management
+        - SSH transport
+        - Native mTLS transport or node
+        - Pipelines and local process runtime
+        - Output, capture, or audit records
+        - Build, installation, or packaging
+        - Platform support
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Describe the user problem, limitation, or workflow gap without assuming a particular implementation.
+      placeholder: "When ..., I need ..., so that ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain what PipeShellX should do, including a short CLI or API example when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or alternative designs and their tradeoffs.
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Platform, compatibility, and security considerations
+      description: Note affected platforms, transports, public APIs, configuration formats, trust boundaries, or backward-compatibility concerns.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes or tests that would demonstrate the feature is complete.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution interest
+      description: This is informational and does not affect whether the request is considered.
+      options:
+        - I can submit an implementation
+        - I can help test or review an implementation
+        - I am proposing the idea only
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add related issues, examples from other tools, sketches, or other supporting context.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and the roadmap for this request.
+          required: true
+        - label: I described the underlying user need and measurable acceptance criteria.
+          required: true
+        - label: I did not include credentials, private infrastructure details, or vulnerability information.
+          required: true
+        - label: I agree to follow the repository's Code of Conduct.
+          required: true
