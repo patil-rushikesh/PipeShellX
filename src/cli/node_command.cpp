@@ -306,7 +306,7 @@ int nodeLaunchdPlist(const std::vector<std::string>& args, std::ostream& out, st
 std::string metricsJson(const psx::transport::NodeServer::Metrics& m) {
     std::ostringstream json;
     json << "{\"accepted_total\":" << m.acceptedTotal << ",\"active_connections\":" << m.activeConnections
-         << ",\"active_stages\":" << m.activeStages << "}\n";
+         << ",\"active_stages\":" << m.activeStages << ",\"lamport_clock\":" << m.lamportClock << "}\n";
     return json.str();
 }
 

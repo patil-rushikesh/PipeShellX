@@ -54,7 +54,7 @@ void NodeServer::acceptOne(psx::os::Socket socket) {
         return; // cannot secure this connection; the socket closes on scope exit
     }
     const std::uint64_t id = nextConnId_++;
-    auto runner = std::make_unique<NodeStageRunner>(reactor_, validateCommand_);
+    auto runner = std::make_unique<NodeStageRunner>(reactor_, validateCommand_, clock_);
     auto transport = std::make_unique<NativeTransport>(
         reactor_, std::move(socket), std::move(tls.value()), Role::Node, *runner,
         NativeTransport::Callbacks{
@@ -72,6 +72,7 @@ NodeServer::Metrics NodeServer::metrics() const {
     Metrics snapshot;
     snapshot.acceptedTotal = acceptedTotal_;
     snapshot.activeConnections = connections_.size();
+    snapshot.lamportClock = clock_.value();
     for (const auto& [id, connection] : connections_) {
         snapshot.activeStages += connection.runner->runningStages();
     }

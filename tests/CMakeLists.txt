@@ -63,7 +63,13 @@ add_executable(pipeshellx_tests
     unit/runtime/test_backoff.cpp
     unit/runtime/test_lamport_clock.cpp
     unit/runtime/test_cluster_snapshot.cpp
+    unit/json/test_json_reader.cpp
+    unit/sync/test_ricart_agrawala.cpp
+    unit/election/test_bully.cpp
+    unit/sim/test_simulation.cpp
+    unit/cli/test_sim_command.cpp
     unit/audit/test_audit_log.cpp
+    unit/audit/test_audit_chain.cpp
     unit/transport/test_frame_codec.cpp
     unit/transport/test_wire.cpp
     unit/transport/test_open_request.cpp

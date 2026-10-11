@@ -30,6 +30,14 @@ public:
     // The Session this runner sends stage output/exit on must be bound() before
     // any stream is opened (it is the Session that dispatches onOpen to us).
     explicit NodeStageRunner(psx::runtime::Reactor& reactor, CommandValidator validator = {});
+    // As above, but advances `sharedClock` instead of a private one. A Lamport
+    // clock belongs to a *process*: NodeServer runs one runner per controller
+    // connection, so it passes the same clock to all of them; otherwise events
+    // from two controllers on one node would never be ordered against each
+    // other. `sharedClock` must outlive this runner (single reactor thread).
+    NodeStageRunner(psx::runtime::Reactor& reactor,
+                    CommandValidator validator,
+                    psx::runtime::LamportClock& sharedClock);
     void bind(Session& session) {
         session_ = &session;
         session_->onStreamWritable([this](StreamId id) { resumeReads(id); });
@@ -50,7 +58,7 @@ public:
     // from a v2-speaking controller (observe()) or, for a v1 controller with
     // no timestamp, on a plain local tick() so the node's own event ordering
     // still advances.
-    std::uint64_t lamportClockValue() const noexcept { return clock_.value(); }
+    std::uint64_t lamportClockValue() const noexcept { return clock_->value(); }
 
 private:
     struct Stage {
@@ -86,7 +94,8 @@ private:
     CommandValidator validator_;
     Session* session_ = nullptr;
     std::unordered_map<StreamId, Stage> stages_;
-    psx::runtime::LamportClock clock_;
+    psx::runtime::LamportClock ownClock_;            // used when no shared clock is given
+    psx::runtime::LamportClock* clock_ = &ownClock_; // never null
 };
 
 } // namespace psx::transport

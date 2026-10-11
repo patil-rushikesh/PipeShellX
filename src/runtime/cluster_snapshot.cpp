@@ -1,8 +1,11 @@
 #include "psx/runtime/cluster_snapshot.hpp"
 
+#include "psx/json/reader.hpp"
+
 #include <algorithm>
-#include <cctype>
 #include <iomanip>
+#include <limits>
+#include <optional>
 #include <sstream>
 
 namespace psx::runtime {
@@ -13,76 +16,34 @@ psx::Error malformed(const char* what) {
     return psx::Error{psx::ErrorClass::Other, 0, what};
 }
 
-// Unescapes a JSON string literal (content between quotes).
-std::string unescapeJson(std::string_view s) {
+// One snapshot line is a few hundred bytes per node; 4 MiB is far above any
+// real fleet (~20k nodes) yet stops one unterminated multi-GB "line" in a
+// shared or corrupted file from exhausting memory in `snapshot dump`.
+constexpr std::size_t kMaxLineBytes = 4U * 1024U * 1024U;
+
+std::string stringField(const psx::json::Value& object, std::string_view key) {
+    const psx::json::Value* v = object.find(key);
+    const std::string* s = v != nullptr ? v->asString() : nullptr;
+    return s != nullptr ? *s : std::string();
+}
+
+std::optional<std::int64_t> intField(const psx::json::Value& object, std::string_view key) {
+    const psx::json::Value* v = object.find(key);
+    const std::int64_t* i = v != nullptr ? v->asInt() : nullptr;
+    return i != nullptr ? std::optional<std::int64_t>(*i) : std::nullopt;
+}
+
+// formatTable() output goes to a terminal. Snapshot files can be shared, so a
+// host or status string must not be able to smuggle ANSI escape sequences
+// (cursor moves, title changes, hidden text) into the operator's terminal.
+std::string printable(std::string_view s) {
     std::string out;
     out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '\\' && i + 1 < s.size()) {
-            char next = s[++i];
-            switch (next) {
-                case '"': out += '"'; break;
-                case '\\': out += '\\'; break;
-                case '/': out += '/'; break;
-                case 'b': out += '\b'; break;
-                case 'f': out += '\f'; break;
-                case 'n': out += '\n'; break;
-                case 'r': out += '\r'; break;
-                case 't': out += '\t'; break;
-                default: out += next; break;
-            }
-        } else {
-            out += s[i];
-        }
+    for (const char c : s) {
+        const auto u = static_cast<unsigned char>(c);
+        out.push_back(u < 0x20 || u == 0x7F ? '?' : c);
     }
     return out;
-}
-
-std::optional<std::string> extractStringField(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":\"";
-    const auto pos = json.find(needle);
-    if (pos == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto start = pos + needle.size();
-    std::size_t end = start;
-    while (end < json.size()) {
-        if (json[end] == '"' && (end == 0 || json[end - 1] != '\\')) {
-            break;
-        }
-        ++end;
-    }
-    if (end >= json.size()) {
-        return std::nullopt;
-    }
-    return unescapeJson(json.substr(start, end - start));
-}
-
-std::optional<std::int64_t> extractIntField(std::string_view json, std::string_view key) {
-    const std::string needle = "\"" + std::string(key) + "\":";
-    const auto pos = json.find(needle);
-    if (pos == std::string_view::npos) {
-        return std::nullopt;
-    }
-    auto start = pos + needle.size();
-    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) {
-        ++start;
-    }
-    auto end = start;
-    if (end < json.size() && (json[end] == '-' || json[end] == '+')) {
-        ++end;
-    }
-    while (end < json.size() && std::isdigit(static_cast<unsigned char>(json[end]))) {
-        ++end;
-    }
-    if (end == start) {
-        return std::nullopt;
-    }
-    try {
-        return std::stoll(std::string(json.substr(start, end - start)));
-    } catch (...) {
-        return std::nullopt;
-    }
 }
 
 } // namespace
@@ -116,78 +77,118 @@ bool ClusterSnapshot::appendToFile(const std::string& path) const {
     if (file.has_parent_path()) {
         std::filesystem::create_directories(file.parent_path(), ignored);
     }
+    const bool existed = std::filesystem::exists(file, ignored);
     std::ofstream out(path, std::ios::app);
     if (!out) {
         return false;
+    }
+    if (!existed) {
+        // Snapshots list every host in the run and what it was doing: keep a
+        // freshly created file owner-only, like a private log, rather than
+        // inheriting a world-readable umask. An existing file keeps whatever
+        // mode its owner chose.
+        std::filesystem::permissions(file, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::replace, ignored);
     }
     out << toJsonLine() << '\n';
     return static_cast<bool>(out);
 }
 
 psx::Result<ClusterSnapshot> ClusterSnapshot::fromJsonLine(std::string_view line) {
-    if (line.find(R"("type":"cluster_snapshot")") == std::string_view::npos) {
+    if (line.size() > kMaxLineBytes) {
+        return malformed("snapshot line exceeds size limit");
+    }
+    auto doc = psx::json::parse(line, {.maxBytes = kMaxLineBytes, .maxDepth = 8});
+    if (!doc.ok()) {
+        return malformed("snapshot line is not valid JSON");
+    }
+    const psx::json::Value& root = doc.value();
+    if (root.asObject() == nullptr || stringField(root, "type") != "cluster_snapshot") {
         return malformed("not a cluster_snapshot line");
     }
-    auto runId = extractStringField(line, "run_id");
-    if (!runId) {
+    const psx::json::Value* runIdValue = root.find("run_id");
+    if (runIdValue == nullptr || runIdValue->asString() == nullptr) {
         return malformed("missing run_id");
     }
-    auto tsEpoch = extractIntField(line, "ts_epoch_ms");
-    const std::int64_t ts = tsEpoch.value_or(0);
+    ClusterSnapshot snapshot(*runIdValue->asString(), intField(root, "ts_epoch_ms").value_or(0));
 
-    ClusterSnapshot snapshot(std::move(*runId), ts);
-
-    const auto nodesStart = line.find("\"nodes\":[");
-    if (nodesStart != std::string_view::npos) {
-        auto pos = nodesStart + 8; // points at '['
-        const auto nodesEnd = line.find(']', pos);
-        if (nodesEnd == std::string_view::npos) {
-            return malformed("malformed nodes array");
+    const psx::json::Value* nodesValue = root.find("nodes");
+    if (nodesValue == nullptr) {
+        return snapshot;
+    }
+    const psx::json::Array* nodes = nodesValue->asArray();
+    if (nodes == nullptr) {
+        return malformed("nodes is not an array");
+    }
+    for (const psx::json::Value& item : *nodes) {
+        if (item.asObject() == nullptr) {
+            return malformed("node entry is not an object");
         }
-        std::string_view nodesSub = line.substr(pos + 1, nodesEnd - (pos + 1));
-        std::size_t objStart = 0;
-        while ((objStart = nodesSub.find('{', objStart)) != std::string_view::npos) {
-            const auto objEnd = nodesSub.find('}', objStart);
-            if (objEnd == std::string_view::npos) {
-                return malformed("malformed node object");
-            }
-            std::string_view nodeObj = nodesSub.substr(objStart, objEnd - objStart + 1);
-            NodeSnapshot node;
-            node.host = extractStringField(nodeObj, "host").value_or("");
-            node.stageId = extractStringField(nodeObj, "stage_id").value_or("");
-            node.status = extractStringField(nodeObj, "status").value_or("");
-            node.exitCode = static_cast<int>(extractIntField(nodeObj, "exit_code").value_or(0));
-            node.lamportTs = static_cast<std::uint64_t>(extractIntField(nodeObj, "lamport_ts").value_or(0));
-            snapshot.record(std::move(node));
-            objStart = objEnd + 1;
+        NodeSnapshot node;
+        node.host = stringField(item, "host");
+        node.stageId = stringField(item, "stage_id");
+        node.status = stringField(item, "status");
+        const auto exitCode = intField(item, "exit_code").value_or(0);
+        if (exitCode < std::numeric_limits<int>::min() || exitCode > std::numeric_limits<int>::max()) {
+            return malformed("exit_code out of range");
         }
+        node.exitCode = static_cast<int>(exitCode);
+        // Lamport timestamps are unsigned. A negative value is corrupt data;
+        // casting it would turn -1 into 18446744073709551615 and reorder events.
+        const auto lamport = intField(item, "lamport_ts").value_or(0);
+        if (lamport < 0) {
+            return malformed("lamport_ts is negative");
+        }
+        node.lamportTs = static_cast<std::uint64_t>(lamport);
+        snapshot.record(std::move(node));
     }
     return snapshot;
 }
 
 psx::Result<std::vector<ClusterSnapshot>> ClusterSnapshot::readFromFile(const std::string& path) {
-    std::ifstream in(path);
+    std::ifstream in(path, std::ios::binary);
     if (!in) {
         return malformed("cannot open snapshot file");
     }
     std::vector<ClusterSnapshot> result;
     std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty()) {
-            continue;
+    char c = 0;
+    bool overlong = false;
+    // Read with a hard per-line cap instead of std::getline, which would
+    // buffer an arbitrarily long line in memory before we could reject it.
+    auto finishLine = [&] {
+        if (!overlong && !line.empty()) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            auto parsed = fromJsonLine(line);
+            if (parsed.ok()) {
+                result.push_back(std::move(parsed.value()));
+            }
         }
-        auto parsed = fromJsonLine(line);
-        if (parsed.ok()) {
-            result.push_back(std::move(parsed.value()));
+        line.clear();
+        overlong = false;
+    };
+    while (in.get(c)) {
+        if (c == '\n') {
+            finishLine();
+        } else if (!overlong) {
+            if (line.size() >= kMaxLineBytes) {
+                overlong = true; // skip the rest of this line without storing it
+                line.clear();
+            } else {
+                line.push_back(c);
+            }
         }
     }
+    finishLine();
     return result;
 }
 
 std::string ClusterSnapshot::formatTable() const {
     std::ostringstream out;
     out << "================================================================================\n";
-    out << "Cluster Snapshot [Run: " << runId_ << " | Timestamp: " << tsEpochMs_ << " ms]\n";
+    out << "Cluster Snapshot [Run: " << printable(runId_) << " | Timestamp: " << tsEpochMs_ << " ms]\n";
     out << "================================================================================\n";
     out << std::left << std::setw(24) << "HOST"
         << std::left << std::setw(16) << "STAGE"
@@ -197,11 +198,9 @@ std::string ClusterSnapshot::formatTable() const {
     out << "--------------------------------------------------------------------------------\n";
     for (const auto& node : nodes_) {
         std::string exitStr = (node.status == "exited") ? std::to_string(node.exitCode) : "-";
-        out << std::left << std::setw(24) << node.host
-            << std::left << std::setw(16) << (node.stageId.empty() ? "-" : node.stageId)
-            << std::left << std::setw(14) << node.status
-            << std::left << std::setw(10) << exitStr
-            << node.lamportTs << "\n";
+        out << std::left << std::setw(24) << printable(node.host) << std::left << std::setw(16)
+            << (node.stageId.empty() ? std::string("-") : printable(node.stageId)) << std::left << std::setw(14)
+            << printable(node.status) << std::left << std::setw(10) << exitStr << node.lamportTs << "\n";
     }
     out << "================================================================================\n";
     return out.str();

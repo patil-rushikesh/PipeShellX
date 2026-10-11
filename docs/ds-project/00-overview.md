@@ -33,18 +33,22 @@ Use that door, not a new one.
 
 ## Phases
 
-| Phase | File | What it adds | Wire protocol touched? | Status |
+| Phase | File | What it adds | Unit | Status |
 | --- | --- | --- | --- | --- |
-| 1 | `01-lamport-clocks.md` | Lamport logical clocks on stage dispatch (OPEN v2) + local event ticks | Yes -- `OpenRequest` v2 only | **Complete & Integrated** in `NativeController`, `DistributedRunner`, and `NodeStageRunner` with automated E2E tests |
-| 2 | `02-cluster-snapshot.md` | Point-in-time cluster state snapshot (simplified Chandy-Lamport), JSONL output + CLI viewer | No | **Complete & Integrated** in `NativeController`, `--snapshot-file` CLI flag, and `pipeshellx snapshot dump` CLI viewer with automated tests |
-| 3 | `03-election-stretch.md` | Bully algorithm for controller failover (multi-controller HA) | New, separate connection type -- design doc only, optional stretch goal | Design only, optional stretch |
-| Docs | `05-testing-guide.md` | Complete testing manual, build steps, and flow trace for every single test case | No | **Complete & Ready for Users/Graders** |
-| Docs | `06-ds-concepts-detailed.md` | Exhaustive analysis of all 18 DS concepts applied across Units I-IV with code mappings | No | **Complete Theoretical Reference** |
+| 1 | `01-lamport-clocks.md` | Lamport clocks on stage dispatch (OPEN v2), one shared clock per node, saturation | III | Done, tested |
+| 2 | `02-cluster-snapshot.md` | Global-state snapshots (simplified Chandy-Lamport), strict parser, `snapshot dump` | III | Done, tested |
+| 3 | `03-election-stretch.md` | Bully election with epochs and leader beacon | III | Done (state machine + simulator; no socket driver yet) |
+| 4 | `06-ds-concepts-detailed.md` section 4.6 | Ricart-Agrawala mutual exclusion with replay protection | III | Done (state machine + simulator) |
+| 5 | `06-ds-concepts-detailed.md` section 5.6 | Hash-chained, verifiable audit log (ledger) | IV | Done, wired into `run --audit-log` |
+| — | `pipeshellx sim` | Demo simulator: reordering, crashes, restarts, invariant checks | III | Done |
+| Docs | `05-testing-guide.md` | How to build, run and demo everything (commands verified) | — | Done |
+| Docs | `06-ds-concepts-detailed.md` | Syllabus mapping, Units I-IV, with honest limits | all | Done |
+| Docs | `07-security-review.md` | Code-by-code review: findings, fixes, residual risks | — | Done |
+| Docs | `08-presentation-flow.md` | FA-2 slide-by-slide flow with live demo script | — | Done |
 
-Do Phase 1 and Phase 2 first -- both are small, additive, and don't put the
-core transport at risk. Phase 3 is a bigger, separate subsystem; only start
-it if 1 and 2 are done and merged and you still have time before the
-deadline.
+Verification: 609 tests pass (107 DS-specific); new code is clean under
+ASan/UBSan and fuzzed; every safety check is mutation-tested. Details are in
+`07-security-review.md`.
 
 ## Cross-cutting rules
 
@@ -55,29 +59,15 @@ in new runtime code), add new source files to the relevant `CMakeLists.txt`,
 write a GoogleTest file for anything new under `tests/unit/`, and never
 weaken an existing protocol invariant to make a feature easier to add.
 
-## Completed Implementation
+## What is where
 
-- `include/psx/runtime/lamport_clock.hpp` & `tests/unit/runtime/test_lamport_clock.cpp`:
-  Header-only Lamport clock with `tick()`, `observe()`, and `value()`.
-- `include/psx/transport/wire.hpp`: Big-endian `writeU64BE` / `readU64BE` wire encoding.
-- `include/psx/transport/open_request.hpp` & `src/transport/open_request.cpp`:
-  `OPEN` v2 protocol with `lamportTs` field; backward-compatible v1 decoding.
-- `src/transport/session.cpp`: Automatically routes `encodeOpenV2` when `lamportTs != 0`.
-- `include/psx/transport/native_controller.hpp` & `src/transport/native_controller.cpp`:
-  Ticking `clock_.tick()` on launch; passing `lamportTs` to `OpenRequest` and returning in `HostResult`.
-- `include/psx/pipeline/distributed_runner.hpp` & `src/pipeline/distributed_runner.cpp`:
-  Ticking `clock_.tick()` on remote pipeline stage dispatch and exposing in `Outcome.stageLamportTimestamps`.
-- `include/psx/transport/node_stage_runner.hpp` & `src/transport/node_stage_runner.cpp`:
-  Observing controller timestamps on `onOpen` and advancing node clock.
-- `include/psx/runtime/cluster_snapshot.hpp` & `src/runtime/cluster_snapshot.cpp`:
-  `ClusterSnapshot` and `NodeSnapshot` data structures, JSONL serialization, parsing (`fromJsonLine`), file loading (`readFromFile`), and tabular rendering (`formatTable`).
-- `NativeController` Snapshot Wiring: `takeSnapshot()` automatically appends global cluster state to `--snapshot-file` on stage launch, completion, and exit.
-- CLI Integration: `--snapshot-file <PATH>` in `pipeshellx run`, and new CLI subcommand `pipeshellx snapshot [dump] <PATH> [--latest] [--json]`.
-- Comprehensive Unit & Integration Tests:
-  - `tests/unit/runtime/test_lamport_clock.cpp`
-  - `tests/unit/runtime/test_cluster_snapshot.cpp`
-  - `tests/unit/cli/test_snapshot_command.cpp`
-  - `tests/unit/cli/test_run_command.cpp`
-  - `tests/unit/transport/test_open_request.cpp`
-  - `tests/unit/transport/test_wire.cpp`
-  - `tests/unit/transport/test_native_transport.cpp` (Lamport integration and Cluster Snapshot integration tests).
+| Concept | Header / source | Tests | CLI |
+| --- | --- | --- | --- |
+| Lamport clock | `include/psx/runtime/lamport_clock.hpp` | `test_lamport_clock.cpp`, integration in `test_native_transport.cpp` | `node status` (`lamport_clock`) |
+| OPEN v2 | `include/psx/transport/open_request.hpp`, `docs/wire_protocol.md` | `test_open_request.cpp`, `test_wire.cpp` | — |
+| Global state | `include/psx/runtime/cluster_snapshot.hpp` | `test_cluster_snapshot.cpp` | `run --snapshot-file`, `snapshot dump` |
+| Strict JSON reader | `include/psx/json/reader.hpp` | `test_json_reader.cpp` | — |
+| Ricart-Agrawala | `include/psx/sync/ricart_agrawala.hpp` | `test_ricart_agrawala.cpp`, `test_simulation.cpp` | `sim mutex` |
+| Bully election | `include/psx/election/bully.hpp` | `test_bully.cpp`, `test_simulation.cpp` | `sim election` |
+| Simulator | `include/psx/sim/simulation.hpp` | `test_simulation.cpp`, `test_sim_command.cpp` | `sim` |
+| Hash-chained audit | `include/psx/audit/audit_log.hpp`, `sha256.hpp` | `test_audit_chain.cpp` | `run --audit-log`, `audit verify` |

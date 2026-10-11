@@ -8,6 +8,7 @@
 #include "psx/stream/bounded_buffer.hpp"
 #include "psx/transport/native_transport.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -95,7 +96,10 @@ private:
     void onConnDone(std::size_t index);
     void retire(std::size_t index);
     void completeIfReady();
-    void takeSnapshot();
+    void takeSnapshot();  // schedule a coalesced snapshot write
+    void flushSnapshot(); // write the current state now (final snapshot)
+    void writeSnapshot();
+    static constexpr std::chrono::milliseconds kSnapshotInterval{250};
 
     psx::runtime::Reactor& reactor_;
     psx::os::TlsConfig config_;
@@ -117,6 +121,7 @@ private:
     bool completed_ = false;
     bool started_ = false;
     std::vector<psx::runtime::TimerId> retireTimers_;
+    psx::runtime::TimerId snapshotTimer_ = 0;
 };
 
 } // namespace psx::transport

@@ -59,3 +59,28 @@ TEST(LamportClockTest, MessagePassingPreservesHappensBefore) {
     const auto tsC = receiver.tick();
     EXPECT_LT(tsB, tsC);
 }
+
+// Security regression: OPEN v2 carries an attacker-chosen u64. A peer that
+// sends UINT64_MAX must not be able to wrap the receiver's clock back to 0,
+// which would make every later event look older than earlier ones.
+TEST(LamportClockTest, ObserveOfMaxValueSaturatesInsteadOfWrapping) {
+    LamportClock clock;
+    clock.tick();
+    const auto v = clock.observe(LamportClock::kMax);
+    EXPECT_EQ(v, LamportClock::kMax);
+    EXPECT_TRUE(clock.saturated());
+    EXPECT_EQ(clock.tick(), LamportClock::kMax); // stays put, never wraps
+    EXPECT_EQ(clock.observe(5), LamportClock::kMax);
+}
+
+TEST(LamportClockTest, ObserveJustBelowMaxReachesMaxWithoutWrapping) {
+    LamportClock clock;
+    EXPECT_EQ(clock.observe(LamportClock::kMax - 1), LamportClock::kMax);
+    EXPECT_FALSE(clock.value() == 0);
+}
+
+TEST(LamportClockTest, TickAtMaxDoesNotWrap) {
+    LamportClock clock(LamportClock::kMax);
+    EXPECT_EQ(clock.tick(), LamportClock::kMax);
+    EXPECT_TRUE(clock.saturated());
+}

@@ -9,7 +9,7 @@ This document presents a comprehensive, rigorous academic and systems analysis o
 2. [Unit I: System Models, Goals & Middleware](#2-unit-i-system-models-goals--middleware)
 3. [Unit II: Distributed Communication, RPC & Protocols](#3-unit-ii-distributed-communication-rpc--protocols)
 4. [Unit III: Synchronization, Logical Clocks & Global State](#4-unit-iii-synchronization-logical-clocks--global-state)
-5. [Unit IV: Consistency, Consensus & Emerging Paradigms](#5-unit-iv-consistency-consensus--emerging-paradigms)
+5. [Unit IV: Emerging Distributed Paradigms](#5-unit-iv-emerging-distributed-paradigms)
 6. [Comprehensive Syllabus Mapping Matrix](#6-comprehensive-syllabus-mapping-matrix)
 
 ---
@@ -38,7 +38,7 @@ graph TB
     subgraph "Worker Node 1"
         NS1["NodeServer (Port 9443)"]
         CLK1["Node Clock<br/>observe(ts)"]
-        EXEC1["Process Spawner<br/>posix_spawn / CreateProcess"]
+        EXEC1["Process Spawner<br/>posix_spawn"]
     end
 
     subgraph "Worker Node N"
@@ -83,7 +83,7 @@ PipeShellX explicitly implements the core DS goals defined by ISO/IEC 10746 (RM-
 | **Access Transparency** | Identical syntax and operations regardless of whether execution is local or remote | The `pipeshellx run` CLI offers the same invocation flags whether targeting a local worker or remote native transport nodes. | [`run_command.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/cli/run_command.cpp) |
 | **Failure Transparency** | Masking faults from users | Connection retries (`--retries N`), idempotent execution guards (`--idempotent`), and failover recovery hide transient drops. | [`process_manager.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/process_manager.cpp) |
 | **Concurrency Transparency** | Multiple tasks execute without mutual interference | Single-threaded event-driven reactor manages bounded concurrent connections (`-c N`) with distinct stream IDs. | [`reactor.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/runtime/reactor.cpp) |
-| **Heterogeneity Support** | Interoperability across differing OS and hardware architectures | Clean abstraction shims for POSIX (Linux, macOS) and Windows NT API. | [`src/os/`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/os) |
+| **Heterogeneity Support** | Interoperability across differing OS and hardware architectures | An OS abstraction layer with POSIX backends for Linux (epoll, pidfd, signalfd), macOS/BSD (kqueue) and a portable `poll` fallback. A Windows controller/node is **not** implemented (the build stops on Windows; see ROADMAP.md). | [`src/os/`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/os) |
 | **Openness** | Extensibility through published, standard interfaces | Formal specification of the `psx/1` binary wire protocol and versioned message framing. | [`docs/wire_protocol.md`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/docs/wire_protocol.md) |
 | **Scalability** | Handling increased load without degradation | Credit-based flow control, ring buffers with configurable drop policies, and non-blocking I/O backends (`epoll`, `kqueue`, `poll`). | [`credit_window.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/stream/credit_window.cpp) |
 
@@ -98,24 +98,25 @@ PipeShellX operates as classical **systems middleware**. It abstracts low-level 
 Communication between controller and nodes conforms to the `psx/1` binary application protocol. All transmissions are formatted into structured Type-Length-Value (TLV) frames.
 
 #### Frame Layout (10-Byte Header)
-```text
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Magic (0x5053)       |   Version (1) |   Frame Type  |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                           Stream ID                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|         Payload Length        |          Payload Data         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+               ...             +
-```
+Every frame is a fixed 10-byte header followed by the payload (all integers
+big-endian; see `docs/wire_protocol.md`, the authoritative spec). There is no
+magic number or per-frame version: versioning lives inside structured
+payloads such as OPEN.
+
+| Offset | Size | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 1 | `type` | Frame type (1-7, below) |
+| 1 | 1 | `flags` | `0x01` END_STREAM, `0x02` STDERR (on DATA) |
+| 2 | 4 | `stream_id` | Stage stream; `0` for connection frames (PING/PONG/GOAWAY) |
+| 6 | 4 | `length` | Payload byte count (max 16 MiB) |
+| 10 | `length` | `payload` | Type-specific bytes |
 
 #### Protocol Frame Types
 1. **`OPEN` (Type 1):** Initiates remote stage execution. Carries command `argv`, `cwd`, and in **v2**, the `lamportTs`.
 2. **`DATA` (Type 2):** Streams chunks of `stdout` or `stderr` output back to the controller.
 3. **`WINDOW_UPDATE` (Type 3):** Grants credit allowances for flow control.
 4. **`EXIT` (Type 4):** Signals completion of a stage along with the process exit code.
-5. **`PING` (Type 5):** Heartbeat probe issued by the controller to verify worker responsiveness.
+5. **`PING` (Type 5):** Heartbeat probe; either peer may send it. Any valid frame proves liveness.
 6. **`PONG` (Type 6):** Liveness confirmation echoed by the worker.
 7. **`GOAWAY` (Type 7):** Graceful connection teardown frame.
 
@@ -139,7 +140,7 @@ sequenceDiagram
 - **Server Skeleton:** Implemented in [`NodeStageRunner::onOpen()`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/node_stage_runner.cpp#L44). It decodes the payload, validates constraints, and executes the target process.
 - **Invocation Semantics:**
   - **At-Most-Once:** Default behavior; commands are not blindly retried upon network drops to avoid non-idempotent side effects.
-  - **At-Least-Once:** Enabled via `--retries N --idempotent` flags when commands are known to be idempotent.
+  - **At-Least-Once:** Enabled via `--retries N --idempotent` when commands are known to be idempotent. This exists on the SSH transport only; the native `psx/1` transport is strictly at-most-once (no reconnect/resume).
 
 ### 3.3 Stream-Oriented Communication & Flow Control
 To prevent fast worker nodes from exhausting the controller's memory buffer, PipeShellX uses **credit-based sliding window flow control** similar to HTTP/2 and QUIC:
@@ -149,7 +150,7 @@ To prevent fast worker nodes from exhausting the controller's memory buffer, Pip
 - Buffers utilize bounded ring buffers with explicit overflow policies: `Block`, `DropOldest`, or `DropNewest`.
 
 ### 3.4 Fault Tolerance & Failure Detection
-- **Liveness Probing (Heartbeats):** Schedulers issue periodic `PING` frames. Failure to receive a corresponding `PONG` within the deadline triggers connection tear-down.
+- **Liveness Probing (Heartbeats):** Both peers send `PING` every 2 s; three silent intervals (~6 s) expire the lease and tear the connection down. On the node this also kills (fences) every stage the lost controller owned.
 - **Connection Fencing:** Detects and closes dead sockets, preventing "zombie" workers from holding controller resources.
 - **Fail-Fast Policy:** When `--fail-fast` is passed, the first node that reports a non-zero exit code or network fault causes the controller to immediately issue cancellation signals to all other in-flight stages.
 - **Canary Deployments:** Via `--canary N`, execution tests a small subset of nodes first. Only upon verified success is the rollout dispatched to the remainder of the cluster.
@@ -157,173 +158,317 @@ To prevent fast worker nodes from exhausting the controller's memory buffer, Pip
 ### 3.5 Distributed Security Architecture
 Distributed systems are vulnerable to eavesdropping, tampering, and impersonation. PipeShellX establishes a zero-trust network boundary using:
 - **Mutual TLS 1.3 (mTLS):** Both controller and worker present X.509 certificates during handshake.
-- **Subject Alternative Name (SAN) Identity Verification:** Nodes reject any controller whose certificate does not present URI SAN `psx://controller`; controllers verify worker certificates against SAN `psx://node/<id>`.
+- **Subject Alternative Name (SAN) Identity Verification:** A node started with `--allow psx://controller` rejects any other SAN after the handshake; a controller pins each node's expected SAN from the inventory (`san=`).
 - **Policy Enforcement:** An independent policy engine ([`src/policy/`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/policy)) inspects commands against administrative allow/deny lists before dispatch.
 
 ---
 
-## 4. Unit III: Synchronization, Logical Clocks & Global State
+## 4. Unit III: Synchronization
 
-This is the primary area of recent algorithmic additions in PipeShellX, implementing core synchronization theory.
+Every mechanism in this section is implemented, unit-tested, and demonstrable.
+"Simplified" and "not implemented" are stated where they apply; see
+`07-security-review.md` for residual limits.
 
-### 4.1 The Problem of Physical Time in Distributed Systems
-In a distributed environment, every machine possesses an independent physical crystal oscillator. These clocks suffer from **physical clock drift** ($\rho$), causing discrepancies of several milliseconds to seconds. Network Time Protocol (NTP) synchronizes clocks but introduces network jitter and non-monotonic backward clock adjustments. 
+| Concept | Status | Where | Demo |
+| --- | --- | --- | --- |
+| Clock synchronization (physical) | Not needed, argued below | n/a | slide only |
+| Logical clocks / Lamport's algorithm | Implemented (controller → node) | `runtime/lamport_clock.hpp`, OPEN v2 | `snapshot dump`, `node status` |
+| Global state | Implemented, simplified (local state only) | `runtime/cluster_snapshot.*` | `run --snapshot-file`, `snapshot dump` |
+| Vector clocks | Not implemented, argued below | n/a | slide only |
+| Election algorithm | Implemented: Bully + epochs | `election/bully.*` | `pipeshellx sim election` |
+| Mutual exclusion | Implemented: Ricart-Agrawala | `sync/ricart_agrawala.*` | `pipeshellx sim mutex` |
+| Beacon protocol | Implemented twice: transport lease (PING/PONG) and the election leader beacon | `transport/native_transport`, `election/bully.*` | kill a node / kill the leader |
+| Self-study: fair mutual exclusion | RA grants in (Lamport ts, id) order; checked by property tests | `sync/ricart_agrawala.*` | `sim mutex` fairness line |
+| Self-study: deadlock detection | Not needed, argued below | n/a | slide only |
 
-Because physical time cannot guarantee causality, Leslie Lamport demonstrated in 1978 that distributed systems must rely on **logical time** to establish a causal happens-before order.
+### 4.1 Why physical clock synchronization is not needed
 
-### 4.2 Lamport's Logical Clocks
-**Class:** [`psx::runtime::LamportClock`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/runtime/lamport_clock.hpp)
+Every node has its own oscillator, which drifts, and NTP adjustments can move a
+clock backwards. PipeShellX never orders events by wall-clock time across
+machines. Timestamps in snapshots and audit records (`ts_epoch_ms`, `ts_ms`) are
+for humans only; ordering uses Lamport time. NTP is therefore an operational
+nicety (readable logs), not a correctness requirement. Cristian's and Berkeley
+algorithms would solve a problem this design deliberately does not have.
 
-#### Theoretical Formulation
-The happens-before relation (denoted as $\rightarrow$) is defined by three rules:
-1. If events $a$ and $b$ occur within the same process, and $a$ occurs before $b$, then $a \rightarrow b$.
-2. If event $a$ is the sending of a message by one process and event $b$ is the receipt of that message by another process, then $a \rightarrow b$.
-3. If $a \rightarrow b$ and $b \rightarrow c$, then $a \rightarrow c$ (transitivity).
+### 4.2 Lamport logical clocks
 
-Lamport's Logical Clock assigns a monotonically increasing scalar timestamp $L(e)$ to every event $e$ such that:
-$$a \rightarrow b \implies L(a) < L(b)$$
+`psx::runtime::LamportClock` implements the two rules:
 
-#### Algorithm Rules (Lamport 1978)
-1. **Clock Condition 1 (Local Event):** Before process $P_i$ executes a local event:
-   $$L_i = L_i + 1$$
-2. **Clock Condition 2 (Message Send):** When process $P_i$ sends message $m$, it increments $L_i$ and piggybacks $L_i$ onto $m$:
-   $$L_i = L_i + 1, \quad m.\text{timestamp} = L_i$$
-3. **Clock Condition 3 (Message Receive):** Upon receiving message $m$ with timestamp $T_m$, process $P_j$ updates its clock:
-   $$L_j = \max(L_j, T_m) + 1$$
+- **Local event or send:** `L = L + 1` (`tick()`).
+- **Receive of timestamp T:** `L = max(L, T) + 1` (`observe()`).
 
-#### PipeShellX Implementation Details
-1. **`LamportClock` Class:**
-   ```cpp
-   class LamportClock {
-   public:
-       std::uint64_t tick() noexcept { return ++counter_; }
-       std::uint64_t observe(std::uint64_t received) noexcept {
-           counter_ = std::max(counter_, received) + 1;
-           return counter_;
-       }
-       std::uint64_t value() const noexcept { return counter_; }
-   private:
-       std::uint64_t counter_ = 0;
-   };
-   ```
-2. **Controller Dispatch Sequence:**
-   Before dispatching any stage, [`NativeController::launch()`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/native_controller.cpp#L221) executes:
-   ```cpp
-   const std::uint64_t lamportTs = clock_.tick();
-   req.lamportTs = lamportTs;
-   ```
-3. **Wire Format Piggybacking (`OPEN` v2):**
-   [`encodeOpenV2()`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/open_request.cpp) serializes `lamportTs` as an 8-byte big-endian unsigned integer at the end of the `OPEN` payload.
-4. **Worker Arrival & Advance:**
-   Upon receiving the frame, [`NodeStageRunner::onOpen()`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/node_stage_runner.cpp#L49) synchronizes:
-   ```cpp
-   if (req.lamportTs != 0) {
-       clock_.observe(req.lamportTs);
-   }
-   ```
-5. **Total Order Extension:**
-   Lamport clocks produce a partial order (concurrent events may share timestamps). PipeShellX extends this to a **strict total order** $\prec$ by using the node's unique host identity as a tiebreaker:
-   $$e_i \prec e_j \iff L(e_i) < L(e_j) \lor (L(e_i) == L(e_j) \land \text{host}_i < \text{host}_j)$$
+Both rules give `a → b ⇒ L(a) < L(b)`.
 
----
+How it flows:
 
-### 4.3 Global State & Consistent Snapshots (Chandy-Lamport)
-**Class:** [`psx::runtime::ClusterSnapshot`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/runtime/cluster_snapshot.hpp)  
-**Implementation:** [`src/runtime/cluster_snapshot.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/runtime/cluster_snapshot.cpp)
+1. `NativeController` and `DistributedRunner` tick their clock for every stage
+   they dispatch and put the value in the OPEN v2 payload (8 bytes, big-endian;
+   see `docs/wire_protocol.md`).
+2. The node observes the value. All of a node's connections share **one**
+   clock, owned by `NodeServer`, because a Lamport clock belongs to a process.
+   An earlier version had one clock per connection; that was a bug, fixed in
+   DS-02.
+3. `HostResult::lamportTs`, the snapshot's `lamport_ts`, and `node status`
+   (`lamport_clock`) expose the values.
 
-#### The Distributed Snapshot Problem
-A global state of a distributed system consists of the local states of all processes and the states of all communication channels. The fundamental challenge (solved by Chandy and Lamport in 1985) is recording a **consistent global state (consistent cut)** without freezing the entire system.
+The clock saturates at `2^64-1` instead of wrapping (DS-01), so a hostile
+`lamportTs` cannot reset a node's clock.
 
-A cut $C$ is consistent if and only if for all events $e, e'$:
-$$(e \in C \land e' \rightarrow e) \implies e' \in C$$
-That is, if an event is in the snapshot, all events that causally preceded it must also be in the snapshot. No message can be recorded as received if it was not also recorded as sent.
+**Limits:**
 
-#### PipeShellX's Simplified Chandy-Lamport in Star Topology
-In PipeShellX, worker nodes do not communicate peer-to-peer; all execution channels terminate at the controller. In a star topology where all message flows are mediated by the coordinator, the full distributed marker-passing algorithm simplifies elegantly:
-1. The coordinator acts as the centralized snapshot initiator and observer.
-2. Because TCP/TLS channels guarantee FIFO ordering and credit flow control bounds in-flight messages, channel state reduces to in-flight RPC requests managed by the controller's connection tables.
-3. Every state transition (dispatch, stage completion, node exit) triggers [`NativeController::takeSnapshot()`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/native_controller.cpp#L271).
+- Timestamps flow controller → node only; `EXIT` is fixed at 5 bytes, so
+  nothing comes back.
+- Lamport time gives a partial order. Two events with the same value are
+  concurrent or unrelated. Where a total order is needed (Ricart-Agrawala), ties
+  are broken by node id: `(ts, id)`.
 
-#### Snapshot Data Structure
-Each node's captured state is represented by a [`NodeSnapshot`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/runtime/cluster_snapshot.hpp#L21):
-```cpp
-struct NodeSnapshot {
-    std::string host;          // Node network identifier
-    std::string stageId;       // Current stage assigned
-    std::string status;        // "connecting", "running", "exited", "failed"
-    int exitCode = -1;         // Process return code (-1 while running)
-    std::uint64_t lamportTs = 0; // Lamport timestamp associated with current state
-};
-```
+### 4.3 Global state (simplified Chandy-Lamport)
 
-#### JSONL Persistent Log Format
-Snapshots are recorded as append-only, newline-delimited JSON (JSONL):
+`NativeController::captureSnapshot()` records, for every target, its host,
+stage, status (`connecting`, `running`, `exited`, `lost`, `timed_out`,
+`cancelled`), exit code, and dispatch Lamport timestamp. A never-dispatched
+target reports `0`. `--snapshot-file` appends snapshots as JSONL:
+
 ```json
-{"type":"cluster_snapshot","run_id":"run-20260905","timestamp_ms":1741138800123,"nodes":[{"host":"10.0.0.1","stage_id":"stage-0","status":"exited","exit_code":0,"lamport_ts":1},{"host":"10.0.0.2","stage_id":"stage-1","status":"running","exit_code":-1,"lamport_ts":2}]}
+{"type":"cluster_snapshot","run_id":"7ab44330815966f1","ts_epoch_ms":1791695638278,"nodes":[{"host":"127.0.0.1","stage_id":"stage-0","status":"exited","exit_code":0,"lamport_ts":1}]}
 ```
 
-#### CLI State Inspection
-The dedicated CLI command [`pipeshellx snapshot dump`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/cli/snapshot_command.cpp) allows operators to visualize snapshots as structured tables or query the latest state with `--latest --json`.
+Writes are coalesced to at most one every 250 ms, and a final snapshot is
+always written. Earlier versions rewrote every node on every event, O(N²), and
+could stall heartbeats (DS-06).
 
----
+**How it relates to Chandy-Lamport.** A real snapshot records each process's
+local state *and* the messages in flight on each channel, so the cut is
+consistent. PipeShellX records local state only, observed at the controller.
+Because every channel ends at the controller (star topology), the controller's
+view is close to a consistent cut. It is still not marker-based, and in-flight
+output bytes are not captured. Present it as a *simplified* global-state
+capture, not as Chandy-Lamport.
 
-### 4.4 Leader Election Algorithms (Bully Algorithm Design)
-**Design Document:** [`docs/ds-project/03-election-stretch.md`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/docs/ds-project/03-election-stretch.md)
+### 4.4 Leader election: Bully with epochs (`psx::election::BullyNode`)
 
-To eliminate the single point of failure in the coordinator, PipeShellX specifies a **Bully Election Algorithm** (Garcia-Molina 1982) for multi-controller high availability:
-- **Election Trigger:** If a backup controller detects missing heartbeats from the primary coordinator, it initiates an election.
-- **Priority:** Controllers possess unique priority IDs. A controller sends `ELECTION` frames to all controllers with higher priority IDs.
-- **Bully Mechanics:** If no higher-priority peer responds with `ANSWER` within a timeout, the initiating controller assumes leadership and broadcasts `COORDINATOR` frames to all nodes.
+**Problem.** One controller is a single point of failure for recurring work.
+With several controller instances, exactly one should coordinate, and a
+survivor must take over when it dies.
 
----
+**Algorithm:**
 
-## 5. Unit IV: Consistency, Consensus & Emerging Paradigms
+- A node starts an election by sending `ELECTION` to every higher id.
+- If no `ANSWER` arrives within the answer timeout, it wins and sends
+  `COORDINATOR` to everyone.
+- If an `ANSWER` does arrive, it waits for a `COORDINATOR` and retries if none
+  comes.
+- A node that receives `ELECTION` from a lower id answers it and starts its own
+  election. This is the "bully" step.
+- A node that sees `COORDINATOR` from a lower id while it is alive starts an
+  election and takes over.
 
-### 5.1 Distributed Consistency Models
-PipeShellX distinguishes between state consistency and execution consistency:
-- **Eventual Consistency:** Applied to background state propagation and snapshot logging.
-- **Output Consensus (Strict Majority Agreement):** Applied to redundant task execution.
+**Additions beyond the textbook:**
 
-### 5.2 Byzantine Drift Detection & Majority Consensus
-**Source File:** [`src/sink/consensus_sink.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/sink/consensus_sink.cpp) and [`src/cli/diff_command.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/cli/diff_command.cpp)
+- **Epochs** (like Raft terms): stale `COORDINATOR` or `BEACON` messages from a
+  crashed leader are ignored.
+- **Impossible messages are rejected:** `ELECTION` from a higher id, `ANSWER`
+  from a lower id.
+- **Epoch saturation**, and `create()` rejects timeouts that would cause
+  endless re-elections.
 
-In mission-critical deployments, identical commands can be dispatched across $N$ redundant nodes using the `--consensus` flag:
-1. Each node runs the command independently and streams stdout back.
-2. The [`ConsensusSink`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/sink/consensus_sink.hpp) computes cryptographic hashes of the output streams.
-3. It performs a **majority voting algorithm**:
-   - If a quorum ($\lfloor N/2 \rfloor + 1$) agrees on identical output, that output is emitted as canonical.
-   - Any node that deviates in output or exit code is flagged as experiencing **configuration drift or Byzantine failure**.
+**Implementation.** It is a sans-IO state machine (feed it messages and time,
+it returns messages to send), the same pattern as `transport::Session`. That
+makes every scenario deterministic in tests and in the simulator. A real
+network driver must take the sender id from the mTLS SAN; see R-02.
 
-### 5.3 Causal & Ordered Delivery
-**Source File:** [`src/sink/ordered_sink.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/sink/ordered_sink.cpp)
+**Evidence:**
 
-When multiple worker nodes emit interleaved output lines across asynchronous sockets, printing them raw results in scrambled text. The `--ordered` flag routes all incoming chunks through an [`OrderedSink`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/sink/ordered_sink.hpp), which reconstructs a globally deterministic sequence matching stage invocation order.
+- Unit tests, and property tests over 150+ seeds with random delays: the
+  highest live id always wins, and recovery after a leader crash completes in
+  under 3 s simulated time.
+- `pipeshellx sim election --kill-leader-at 1500 --revive-at 4000` shows a crash,
+  re-election, and the restarted node bullying its way back.
 
-### 5.4 Auditability & Tamper-Evident Logging
-**Source File:** [`src/audit/audit_log.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/audit/audit_log.cpp)
+### 4.5 Beacon protocol and failure detection
 
-Reflecting distributed ledger principles, every operation, certificate validation, and command execution generates a structured, append-only audit event. These entries form an immutable forensic log verifying compliance across the cluster.
+PipeShellX uses beacons at two levels:
 
----
+1. **Transport lease.** Controller and node exchange `PING`/`PONG` every 2 s.
+   Three silent intervals expire the lease. The node then *fences* (kills)
+   every stage owned by the lost controller, so no orphaned work continues.
+   Tests: `LeaseExpiresWhenThePeerGoesSilent`, `LeaseKeepsAnIdleConnectionAlive`,
+   `DroppingTheRunnerKillsTheRunningStage`.
+2. **Leader beacon.** The elected leader broadcasts `BEACON` every 200 ms.
+   Followers that hear nothing for 700 ms declare it dead and start an
+   election. Test: `LeaderCrashIsDetectedByBeaconSilenceAndNextHighestTakesOver`.
 
-## 6. Comprehensive Syllabus Mapping Matrix
+The trade-off is detection speed versus false positives. A shorter timeout
+detects a crash sooner, but declares a slow-but-alive node dead more often.
 
-| Syllabus Unit | Standard Syllabus Concept | PipeShellX Implementation / Feature | Primary Code References | Status |
-|---|---|---|---|---|
-| **Unit I** | Distributed System Definition | Multi-process, distinct address spaces, network coordination | [`docs/architecture.md`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/docs/architecture.md) | ✅ Built-in |
-| **Unit I** | DS Goals & Transparencies | Location, failure, access transparencies; inventory resolution | [`src/inventory/inventory.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/inventory/inventory.cpp) | ✅ Built-in |
-| **Unit I** | System Architectures | Master-Worker coordinator, Star topology, Pipeline DAG | [`src/pipeline/dag_runner.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/pipeline/dag_runner.cpp) | ✅ Built-in |
-| **Unit I** | Middleware Concept | Event reactor, transport framing, process spawning shims | [`src/runtime/reactor.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/runtime/reactor.cpp) | ✅ Built-in |
-| **Unit II** | Communication & Protocols | `psx/1` binary wire protocol, 10-byte TLV framing | [`src/transport/frame_codec.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/frame_codec.cpp) | ✅ Built-in |
-| **Unit II** | Remote Procedure Call (RPC) | `OPEN` (call) $\rightarrow$ `EXIT` (return), serialization stubs | [`src/transport/open_request.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/open_request.cpp) | ✅ Built-in |
-| **Unit II** | Stream Communication & Flow | Multiplexed `StreamId`, credit-based flow control, ring buffers | [`src/stream/credit_window.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/stream/credit_window.cpp) | ✅ Built-in |
-| **Unit II** | Fault Tolerance & Heartbeats | PING/PONG liveness probing, timeouts, fail-fast, canary | [`src/transport/canary_controller.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/canary_controller.cpp) | ✅ Built-in |
-| **Unit II** | Distributed Security | mTLS 1.3, X.509 CA, SAN URI identity verification, policy | [`src/os/tls.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/os/tls.cpp), [`src/policy/`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/policy) | ✅ Built-in |
-| **Unit III** | **Lamport's Logical Clocks** | Header-only clock, conditions C1/C2, happens-before total ordering | [`include/psx/runtime/lamport_clock.hpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/include/psx/runtime/lamport_clock.hpp) | ⭐ **New Core Feature** |
-| **Unit III** | **OPEN v2 Protocol Wire Format** | Piggybacking 8-byte big-endian `lamportTs` on dispatch | [`src/transport/open_request.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/transport/open_request.cpp) | ⭐ **New Core Feature** |
-| **Unit III** | **Global State & Snapshots** | Simplified Chandy-Lamport global cut, JSONL log, state dump | [`src/runtime/cluster_snapshot.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/runtime/cluster_snapshot.cpp) | ⭐ **New Core Feature** |
-| **Unit III** | **Snapshot CLI Viewer** | `pipeshellx snapshot dump` with tabular and JSON formatters | [`src/cli/snapshot_command.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/cli/snapshot_command.cpp) | ⭐ **New Core Feature** |
-| **Unit III** | Leader Election | Bully algorithm specification for multi-controller failover | [`docs/ds-project/03-election-stretch.md`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/docs/ds-project/03-election-stretch.md) | 📄 **Design Spec** |
-| **Unit IV** | Distributed Consensus | Majority voting on output streams, drift detection | [`src/sink/consensus_sink.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/sink/consensus_sink.cpp) | ✅ Built-in |
-| **Unit IV** | Ordered Delivery | Sequence reconstruction across asynchronous streams | [`src/sink/ordered_sink.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/sink/ordered_sink.cpp) | ✅ Built-in |
-| **Unit IV** | Tamper-Evident Audit Logging | Append-only ledger recording all operations for verification | [`src/audit/audit_log.cpp`](file:///c:/Users/raman/Desktop/trainer%20module/PipeShellX/src/audit/audit_log.cpp) | ✅ Built-in |
+### 4.6 Mutual exclusion: Ricart-Agrawala (`psx::sync::RicartAgrawala`)
+
+**Problem.** Two controller instances (two operators, or two schedulers) running
+a fleet-wide change such as a rolling restart at the same moment can take down
+the whole fleet. That change is a critical section.
+
+**Algorithm:**
+
+- To enter, a node sends `REQUEST(ts)` to everyone and waits for a `REPLY` from
+  each.
+- A node defers its reply if it holds the section, or if it wants the section
+  and its own `(ts, id)` is smaller.
+- On release, it sends all the deferred replies.
+- Cost: 2(N−1) messages per entry. No deadlock and no starvation, because
+  `(ts, id)` is a total order.
+
+**Additions beyond the textbook:**
+
+- A REPLY echoes the request timestamp it answers, so a replayed REPLY from an
+  earlier round is rejected. Textbook RA would admit two holders.
+- Duplicate, unsolicited and non-member messages are rejected without changing
+  state.
+- A saturated clock refuses to order a new request.
+
+**Failure handling.** One crashed peer blocks everyone, because its reply never
+comes. `removePeer()` lets the failure detector (the lease) remove it. This is
+only safe if the detector is accurate (R-03).
+
+**Fairness (self-study topic).** Requests are granted in Lamport-timestamp
+order. Lodha & Kshemkalyani's algorithm keeps the same ordering and reduces the
+message count. RA is the baseline it improves on.
+
+**Evidence:**
+
+- A randomized property test over 300 seeds with message reordering: never two
+  holders, every request served, and grants in `(ts, id)` order.
+- The simulator confirms exactly 2(N−1) messages per entry.
+- `pipeshellx sim mutex --naive` shows the overlap that RA prevents.
+
+### 4.7 Not implemented, and why
+
+- **Vector clocks.** Their value is detecting *concurrent* updates to shared
+  state. In PipeShellX all causality passes through one coordinator (star
+  topology), and the one shared resource is protected by RA. So there is no
+  concurrent-update detection problem to solve. They become necessary with
+  peer-to-peer replication (several controllers editing shared state without a
+  lock).
+- **Distributed deadlock detection (Knapp's classification).** RA cannot
+  deadlock, because the `(ts, id)` total order means waits never form a cycle.
+  No other component holds one resource while waiting for another, so there is
+  no wait-for graph to analyse.
+
+## 5. Unit IV: Emerging Distributed Paradigms
+
+| Concept | Status in PipeShellX |
+| --- | --- |
+| Distributed object-based systems | Applied, as a remote service with a defined interface |
+| Distributed web-based systems | Not applicable (no web tier); justified |
+| Distributed file systems | Not applicable; justified |
+| Serverless architectures | Compared, not implemented |
+| Case studies | Kubernetes and Hadoop mapped to concrete design choices |
+| Blockchain / distributed ledger (self-study) | Hash-chained audit log implemented; why not a blockchain |
+| Distributed database trade-offs (self-study) | CAP and PACELC choices of this design |
+
+### 5.1 Distributed object-based systems
+
+The node daemon is a remote service with a published interface (`psx/1`). The
+controller side acts as the *client stub*: `NativeController` marshals an
+`OpenRequest` (`encodeOpenV2`). The node side acts as the *server skeleton*:
+`NodeStageRunner` unmarshals it, validates it against policy, and runs the
+stage. This is the RMI/CORBA pattern without the framework.
+
+Differences from RMI/CORBA: no object references, no naming service (hosts come
+from the inventory), and calls stream their results (`DATA` frames) instead of
+returning a single value. Invocation semantics are at-most-once on the native
+transport.
+
+### 5.2 Distributed web-based and file systems: not applicable
+
+PipeShellX has no HTTP tier and stores no shared files. Adding a web dashboard
+or a replicated file store would add a component the problem does not need.
+Where a shared, durable record is needed, it is the audit log (5.6), which is
+append-only and single-writer by design.
+
+### 5.3 Serverless (compared, not implemented)
+
+A stage resembles a function invocation: short-lived, triggered by a request,
+stateless between runs. The differences explain why PipeShellX is not FaaS:
+
+- It runs on **specific, named hosts**; serverless deliberately hides placement.
+- Stages can be long-running and stream output.
+- There is no automatic scale-to-zero or per-invocation billing.
+
+### 5.4 Case studies mapped to design choices
+
+| Case study | Its design | PipeShellX equivalent |
+| --- | --- | --- |
+| Kubernetes | API server + controller-manager (control plane), kubelet on each node; controller-manager leader election via **leases**; node heartbeats | Controller = control plane; `pipeshellx node` = kubelet; Bully + leader beacon = lease-based election; PING/PONG lease = node heartbeat; node-side fencing ≈ kubelet killing pods it no longer owns |
+| Apache Hadoop (MapReduce) | Master/worker, input split across workers, results merged; speculative re-execution | `run` fan-out = map, `--consensus` / fan-in pipelines = reduce; canary rollout instead of speculation |
+| AWS / Cloudflare / Megaport | Managed cloud, edge network, private interconnect | Deployment substrate rather than design inspiration. PipeShellX can run on cloud VMs; nothing in it depends on them. Covered on one slide only. |
+
+### 5.5 Distributed database trade-offs (CAP / PACELC)
+
+**On a partition (CAP).** When the controller–node link breaks, the node kills
+the stages that controller owned, and the controller reports them as lost. It
+never invents a successful exit code. That chooses **consistency and safety
+over availability**: work stops rather than continuing unobserved.
+
+**Without a partition (PACELC "else").** The native transport is
+at-most-once and does not resume. That trades latency and throughput for
+simplicity and predictable semantics.
+
+**Coordination layer.** Bully and RA choose liveness under crash failures and
+are *not* partition-tolerant: a partition can create two leaders, or two
+holders after `removePeer`. A partition-tolerant version needs a majority
+quorum (Raft for election, Maekawa or leases with fencing tokens for mutual
+exclusion). That is listed as future work, not claimed.
+
+### 5.6 Distributed ledger: the hash-chained audit log
+
+**Why a ledger-like record is justified.** The audit trail is the evidence of
+what ran on the fleet. An operator covering up a failed run should not be able
+to edit it unnoticed.
+
+**What is implemented:**
+
+- Every record carries `prev` (the SHA-256 of the previous record) and `hash`
+  (the SHA-256 of itself), forming a hash chain.
+- `pipeshellx audit verify` reports the first altered, deleted, inserted or
+  reordered record.
+- `--expect-head` anchors the chain to a head saved elsewhere, which also
+  detects truncation.
+
+**Why not a blockchain.** A blockchain adds *distributed consensus among
+mutually distrusting writers*. Here there is one trusted writer per log, so
+consensus would add cost (more nodes, more messages, more latency) without
+solving a problem we have. The honest limit: whoever can write the file can
+rewrite the chain from the edit onward, so the head must be anchored elsewhere
+or signed (R-05).
+
+### 5.7 Other distributed features (built in before FA-2)
+
+- **Output consensus (`--consensus`).** Groups hosts whose output is
+  byte-identical and ranks the groups by size. The largest group is reported as
+  the consensus and the others as configuration drift. This is drift detection
+  by plurality. It is not Byzantine fault tolerance and not a quorum protocol.
+- **Ordered output (`--ordered`).** Buffers each stage's output and renders it
+  in stage order instead of arrival order.
+
+## 6. Syllabus mapping matrix
+
+| Unit | Concept | PipeShellX implementation | Code | Status |
+| --- | --- | --- | --- | --- |
+| I | Definition, goals, transparencies | Multi-process controller/nodes, inventory naming | `docs/architecture.md`, `src/inventory/` | Built in |
+| I | Architectures | Master-worker, star topology, pipeline DAG | `src/pipeline/` | Built in |
+| I | Middleware | Reactor, framing, process spawning | `src/runtime/`, `src/transport/` | Built in |
+| II | Message protocol | `psx/1`, 10-byte header | `src/transport/frame_codec.cpp` | Built in |
+| II | RPC pattern | OPEN (call) → DATA* → EXIT (return) | `src/transport/open_request.cpp` | Built in |
+| II | Stream communication | Multiplexed streams, credit flow control | `src/stream/` | Built in |
+| II | Fault tolerance | Lease heartbeats, fencing, fail-fast, canary | `src/transport/` | Built in |
+| III | Lamport clocks | OPEN v2, shared node clock, saturation | `runtime/lamport_clock.hpp` | **FA-2** |
+| III | Global state | Coalesced snapshots, strict parser, CLI | `runtime/cluster_snapshot.*` | **FA-2** (simplified) |
+| III | Election | Bully + epochs + leader beacon | `election/bully.*` | **FA-2** |
+| III | Mutual exclusion | Ricart-Agrawala + replay protection | `sync/ricart_agrawala.*` | **FA-2** |
+| III | Beacon protocol | Transport lease + leader beacon | `transport/`, `election/` | Built in + **FA-2** |
+| III | Clock sync, vector clocks, deadlock | Argued not needed (4.1, 4.7) | n/a | Justified |
+| IV | Object-based | Remote service, stub/skeleton | `transport/` | Applied |
+| IV | Case studies | Kubernetes, Hadoop mapping | this document, 5.4 | Discussed |
+| IV | Ledger | Hash-chained audit log + verify | `audit/audit_log.*`, `cli/audit_command.cpp` | **FA-2** |
+| IV | DB trade-offs | CAP/PACELC choices | this document, 5.5 | Discussed |
+| IV | Web, DFS, serverless | Not applicable / compared | this document, 5.2–5.3 | Justified |

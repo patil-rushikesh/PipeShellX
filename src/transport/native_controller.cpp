@@ -106,6 +106,9 @@ NativeController::~NativeController() {
     for (const auto timer : retireTimers_) {
         reactor_.cancel(timer);
     }
+    if (snapshotTimer_ != 0) {
+        reactor_.cancel(snapshotTimer_); // the callback captures `this`
+    }
 }
 
 psx::Result<void> NativeController::start(const std::vector<Target>& targets,
@@ -292,8 +295,8 @@ void NativeController::completeIfReady() {
     if (remaining_ != 0 || active_ != 0 || completed_) {
         return;
     }
+    flushSnapshot(); // final, consistent state of every target
     completed_ = true;
-    takeSnapshot();
     std::vector<HostResult> results;
     results.reserve(conns_.size());
     for (auto& conn : conns_) {
@@ -328,17 +331,47 @@ psx::runtime::ClusterSnapshot NativeController::captureSnapshot() const {
             node.status = "connecting";
         }
         node.exitCode = conn->result.exitCode;
-        node.lamportTs = conn->result.lamportTs != 0 ? conn->result.lamportTs : clock_.value();
+        // The timestamp of this node's dispatch event, or 0 if it was never
+        // dispatched. Never substitute the controller's current clock: that
+        // would stamp an event that did not happen with a logical time.
+        node.lamportTs = conn->result.lamportTs;
         snapshot.record(std::move(node));
     }
     return snapshot;
 }
 
 void NativeController::takeSnapshot() {
-    if (options_.snapshotPath.empty()) {
+    if (options_.snapshotPath.empty() || completed_) {
         return;
     }
-    captureSnapshot().appendToFile(options_.snapshotPath);
+    // Coalesce. Every snapshot records every target, and launches/completions
+    // happen once per target, so writing on every event is O(N^2) bytes of
+    // synchronous disk I/O on the reactor thread (~100 MB for 1000 hosts).
+    // Instead, mark dirty and write at most once per kSnapshotInterval; the
+    // final state is always written by flushSnapshot() from completeIfReady().
+    if (snapshotTimer_ != 0) {
+        return; // a write is already scheduled and will see this change
+    }
+    snapshotTimer_ = reactor_.after(kSnapshotInterval, [this] {
+        snapshotTimer_ = 0;
+        writeSnapshot();
+    });
+}
+
+void NativeController::flushSnapshot() {
+    if (snapshotTimer_ != 0) {
+        reactor_.cancel(snapshotTimer_);
+        snapshotTimer_ = 0;
+    }
+    if (!options_.snapshotPath.empty()) {
+        writeSnapshot();
+    }
+}
+
+void NativeController::writeSnapshot() {
+    // An unwritable path degrades to "no snapshots", like the audit log; the
+    // run itself must never fail because observability could not be written.
+    (void)captureSnapshot().appendToFile(options_.snapshotPath);
 }
 
 } // namespace psx::transport

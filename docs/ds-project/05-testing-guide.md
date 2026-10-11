@@ -41,7 +41,7 @@ cmake -S . -B build-wsl \
 ```
 
 > [!NOTE]
-> Setting `-DPIPESHELLX_SYSTEM_GTEST=OFF` instructs CMake's FetchContent to automatically download and build GoogleTest 1.14.0 into `build-wsl/_deps/`, eliminating the need for manual library management.
+> Setting `-DPIPESHELLX_SYSTEM_GTEST=OFF` makes CMake use an installed GoogleTest if one is found, and otherwise fetch the pinned GoogleTest 1.17.0 commit into `build-wsl/_deps/`.
 
 ### 1.3 Compiling the Test Suite
 
@@ -58,61 +58,60 @@ The compiled test executable will be generated at:
 
 ## 2. Automated Test Execution Commands
 
-### 2.1 Running All Distributed Systems Tests
-
-To run all 21 DS unit and integration tests covering Lamport Clocks, Cluster Snapshots, and the Snapshot CLI:
+### 2.1 Running all distributed-systems tests (107 tests)
 
 ```bash
-./build-wsl/bin/pipeshellx_tests \
-    --gtest_filter="*Lamport*:*ClusterSnapshot*:*SnapshotCommand*:*OpenRequest*" \
-    --gtest_color=yes
+./build-wsl/bin/pipeshellx_tests --gtest_color=yes --gtest_filter=\
+'LamportClock*:ClusterSnapshot*:JsonReader*:SnapshotCommand*:OpenRequest*:Wire*:'\
+'RicartAgrawala*:MutexWire*:Bully*:ElectionWire*:*SimTest*:SimCommand*:'\
+'Sha256*:AuditChain*:AuditCommand*'
 ```
 
-### 2.2 Running Individual Test Suites
+> Run the suite as a normal user, not root. Root can write anywhere, so the
+> "unwritable path" tests (`...UnwritablePath...`) fail under root by design.
 
-```bash
-# 1. Lamport Clock Unit Tests (6 tests)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="LamportClockTest.*"
+### 2.2 Suites and counts
 
-# 2. Lamport Clock End-to-End Integration Test (1 test)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="LamportClockIntegrationTest.*"
+| Suite | Tests | Covers | Unit |
+| --- | ---: | --- | --- |
+| `LamportClockTest` | 9 | tick/observe rules, happens-before, saturation (no wrap) | III |
+| `LamportClockIntegrationTest` | 2 | ordered dispatch over mTLS; one shared clock per node | III |
+| `OpenRequestTest` | 15 | OPEN v1/v2 wire format, truncation, bounds | II/III |
+| `WireTest` | 4 | big-endian u32/u64 helpers | II |
+| `ClusterSnapshotTest` | 14 | snapshot model, JSONL, hostile strings, size cap, permissions | III |
+| `ClusterSnapshotIntegrationTest` | 2 | controller writes snapshots; undispatched = ts 0 | III |
+| `JsonReaderTest` | 7 | strict JSON reader: escapes, duplicates, bounds, depth | hardening |
+| `SnapshotCommandTest` | 5 | `snapshot dump` CLI | III |
+| `RicartAgrawalaTest` | 13 | mutual exclusion, tie-break, replay rejection, crash, 300-seed property test | III |
+| `MutexWireTest` | 1 | 26-byte mutex message codec | III |
+| `BullyTest` | 11 | election, takeover, beacon failure detection, epochs, restart | III |
+| `ElectionWireTest` | 1 | 18-byte election message codec | III |
+| `ElectionSimTest` | 4 | 150-seed reordering, leader crash recovery bound, revive, determinism | III |
+| `MutexSimTest` | 3 | 200-seed safety/liveness/fairness, 2(N−1) messages, naive overlap, crash | III |
+| `SimCommandTest` | 4 | `pipeshellx sim` CLI and argument validation | III |
+| `Sha256Test` | 3 | NIST vectors, incremental, OpenSSL cross-check | IV |
+| `AuditChainTest` | 8 | hash chain: modify/delete/insert/reorder/truncate, reopen, partial write | IV |
+| `AuditCommandTest` | 1 | `pipeshellx audit verify` | IV |
+| **Total** | **107** | | |
 
-# 3. Cluster Snapshot Data Structure & JSONL File Tests (8 tests)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="ClusterSnapshotTest.*"
-
-# 4. Cluster Snapshot Controller End-to-End Integration Test (1 test)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="ClusterSnapshotIntegrationTest.*"
-
-# 5. Snapshot CLI Viewer & Formatter Tests (5 tests)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="SnapshotCommandTest.*"
-
-# 6. OPEN Frame Wire Encoding & Version 2 Protocol Tests (16 tests)
-./build-wsl/bin/pipeshellx_tests --gtest_filter="OpenRequestTest.*"
-
-# 7. CLI Flag Parser Tests for --snapshot-file
-./build-wsl/bin/pipeshellx_tests --gtest_filter="ParseRunTest.SnapshotFileFlagIsParsed"
-```
-
-### 2.3 Running with Verbose Output
-
-To inspect the detailed progress and timing of every test:
-```bash
-./build-wsl/bin/pipeshellx_tests --gtest_filter="*Lamport*:*ClusterSnapshot*" --gtest_print_time=1
-```
-
----
+Run one suite with, for example, `--gtest_filter='BullyTest.*'`.
 
 ## 3. Detailed Test Case Catalog & Execution Flow
+
+> This catalogue walks through the original Lamport and snapshot suites test by
+> test. The tests added in FA-2 (Ricart-Agrawala, Bully, simulator, audit chain,
+> and security regressions) are listed in section 2.2 and explained finding by
+> finding in `07-security-review.md`.
 
 Below is the exhaustive, step-by-step execution flow for every test case in the distributed systems test suites.
 
 ```mermaid
 graph TD
     subgraph "Unit Test Layer"
-        T1["LamportClockTest (6 tests)<br/>Internal state, tick, observe"]
-        T2["ClusterSnapshotTest (8 tests)<br/>Data model, JSONL parser, serializer"]
+        T1["LamportClockTest (9 tests)<br/>Internal state, tick, observe"]
+        T2["ClusterSnapshotTest (14 tests)<br/>Data model, JSONL parser, serializer"]
         T3["SnapshotCommandTest (5 tests)<br/>CLI arg parsing, table/JSON rendering"]
-        T4["OpenRequestTest (16 tests)<br/>v1/v2 wire protocol, boundary checks"]
+        T4["OpenRequestTest (15 tests)<br/>v1/v2 wire protocol, boundary checks"]
     end
     subgraph "Integration Test Layer (mTLS 1.3)"
         I1["LamportClockIntegrationTest<br/>Live Controller -> NodeServer -> Lamport tick/observe"]
@@ -380,73 +379,67 @@ sequenceDiagram
 
 ## 4. Interactive Manual Testing Walkthrough
 
-This section provides a guide to manually execute commands, generate snapshots, and inspect cluster state using the `pipeshellx` CLI tools.
+These commands were run end to end against a real node daemon over mTLS. Run
+them as a normal user from an empty directory, with `B=./build-wsl/bin/pipeshellx`.
 
-### Step 1: Initialize Ephemeral Test PKI (mTLS Certificates)
-
-```bash
-# Create temporary working directory
-mkdir -p /tmp/psx-demo && cd /tmp/psx-demo
-
-# Initialize Certificate Authority and generate keys
-pipeshellx ca init --dir ./pki
-pipeshellx ca issue --dir ./pki --san "psx://controller" --out ./pki/controller.pem
-pipeshellx ca issue --dir ./pki --san "psx://node/1" --out ./pki/node1.pem
-```
-
-### Step 2: Launch a Background Worker Node
-
-In a separate terminal or background job:
-```bash
-pipeshellx node \
-    --listen 127.0.0.1:9443 \
-    --cert ./pki/node1.pem \
-    --key ./pki/node1.key \
-    --ca ./pki/ca.pem
-```
-
-### Step 3: Run Distributed Task with Snapshot Recording
-
-Execute a cluster command across the worker while capturing global state to `snapshots.jsonl`:
+### Step 1: PKI
 
 ```bash
-pipeshellx run \
-    --native \
-    --target 127.0.0.1:9443 \
-    --cert ./pki/controller.pem \
-    --key ./pki/controller.key \
-    --ca ./pki/ca.pem \
-    --snapshot-file ./snapshots.jsonl \
-    -- /bin/sh -c "echo 'Distributed Systems Task'; sleep 1; uname -a"
+$B ca init --cn psx-fleet --dir pki
+$B ca issue --san psx://controller --ca pki --out pki/controller   # writes .crt + .key
+$B ca issue --san psx://node/1     --ca pki --out pki/node1
 ```
 
-### Step 4: Inspect Global State Snapshots via CLI
+### Step 2: inventory and node daemon (second terminal)
 
-View formatted tabular history:
 ```bash
-pipeshellx snapshot dump ./snapshots.jsonl
+printf '[demo]\n127.0.0.1 transport=native san=psx://node/1 native_port=9443\n' > fleet.ini
+$B node --cert pki/node1.crt --key pki/node1.key --ca pki/ca.crt \
+        --listen 127.0.0.1:9443 --allow psx://controller --control ./node.sock
 ```
 
-Sample output:
-```text
-=== Cluster Snapshot [Run: run-1741138800000] @ 2026-09-05 03:00:00.123 UTC ===
-HOST            STAGE           STATUS          EXIT    LAMPORT_TS
-------------------------------------------------------------------
-127.0.0.1:9443  stage-0         exited          0       1
-```
+### Step 3: run twice, as two independent controllers (Lamport + snapshot + audit)
 
-View the latest snapshot in raw JSON format (for automation / jq):
 ```bash
-pipeshellx snapshot dump ./snapshots.jsonl --latest --json
+for i in 1 2; do
+  $B run --transport native --cert pki/controller.crt --key pki/controller.key --ca pki/ca.crt \
+     -i fleet.ini -g demo --snapshot-file snaps.jsonl --audit-log audit.jsonl \
+     -- sh -c "echo run $i on \$(hostname)"
+done
+$B node status --control ./node.sock
+#  {"accepted_total":2,...,"lamport_clock":3}   <- one shared clock: observe(1)=2, observe(1)=3
 ```
 
----
+### Step 4: global state
+
+```bash
+$B snapshot dump snaps.jsonl --latest
+$B snapshot dump snaps.jsonl --latest --json
+```
+
+### Step 5: tamper-evident audit log
+
+```bash
+$B audit verify audit.jsonl                        # OK ... head: <hash>   (save the head)
+sed -i '3s/"exit_code":0/"exit_code":7/' audit.jsonl
+$B audit verify audit.jsonl                        # BROKEN at line 3 ... (exit 1)
+```
+
+### Step 6: election and mutual exclusion
+
+```bash
+$B sim election --nodes 4 --seed 3 --kill-leader-at 1500 --revive-at 4000
+$B sim mutex --naive --seed 7                      # baseline: SAFETY VIOLATION (exit 1)
+$B sim mutex --seed 7 --requests 1                 # Ricart-Agrawala: safe, fair, 2(N-1) msgs
+$B sim mutex --seed 7 --requests 1 --kill 1@80 --detect 400   # crash inside the section
+```
 
 ## 5. Troubleshooting & Common Pitfalls
 
 | Symptom | Probable Cause | Resolution |
 |---|---|---|
-| `posix_spawn_file_actions_addchdir: symbol not found` | glibc version compatibility differences in Linux distributions | Ensure `src/os/posix/process.cpp` uses `PSX_GLIBC_AT_LEAST(2, 44)` check, falling back to `posix_spawn_file_actions_addchdir_np`. |
 | `fatal error: openssl/ssl.h: No such file or directory` | Missing OpenSSL development headers | Run `sudo apt-get install -y libssl-dev`. |
 | `Address already in use` during integration tests | A previous test crashed or a daemon is holding the port | Run `pkill pipeshellx` or wait for OS socket cleanup. |
 | Test hang during network runs | Firewall or WSL NAT blocking loopback connections | Run test with `127.0.0.1` instead of host machine external IP. |
+| `...UnwritablePath...` tests fail | Running as root (root can write anywhere) | Run the tests as a normal user. |
+| `no inventory` from `run` | `run` needs an inventory even with `--transport native` | Pass `-i fleet.ini` (see Step 2). |

@@ -1,5 +1,9 @@
 # Phase 1 — Lamport Logical Clocks
 
+**Status: implemented.** This file is the original plan; where it differs
+from the code, the code and `07-security-review.md` win (one shared clock
+per node process, and the clock saturates at `2^64-1` instead of wrapping).
+
 ## Goal
 
 Give every stage-dispatch event a Lamport timestamp so the controller and
@@ -197,7 +201,10 @@ node_stage_runner.cpp`). Do this:
    result in `lamportTs`, and switch that call site from `encodeOpen` to
    `encodeOpenV2`.
 2. **Node side** (`NodeStageRunner::onOpen`, which receives a decoded
-   `OpenRequest`): give `NodeStageRunner` a `LamportClock` member, call
+   `OpenRequest`): `NodeServer` owns ONE `LamportClock` and passes it by
+   reference to every `NodeStageRunner` (a runner exists per connection, and
+   a Lamport clock belongs to the process, not the connection -- a clock per
+   runner was a bug, fixed as DS-02 in `07-security-review.md`). Call
    `.observe(request.lamportTs)` as the first thing `onOpen` does (skip the
    observe -- just `tick()` instead -- if `lamportTs == 0`, since that means
    a v1 peer with no clock).
@@ -222,7 +229,7 @@ node_stage_runner.cpp`). Do this:
 - Do not use wall-clock time anywhere in this feature. The entire point of
   a Lamport clock is that it's a counter, not a timestamp -- if you find
   yourself reaching for `std::chrono`, you've built something else.
-- Do not add locking. Single reactor thread per connection; a bare
+- Do not add locking. One reactor thread per process; a bare
   `std::uint64_t` is correct.
 - Do not try to make this a *vector* clock. That's a different (larger)
   data structure and isn't what's being asked for in this phase. If a

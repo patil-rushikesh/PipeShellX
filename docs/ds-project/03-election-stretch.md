@@ -1,10 +1,13 @@
-# Phase 3 (optional stretch) — Bully Election for Controller HA
+# Phase 3: Bully election for controller HA
 
-**Status: design sketch only. Do not start this until Phase 1 and Phase 2
-are both done, tested, and you still have real time left before the
-deadline.** This is a genuinely separate subsystem, not an extension of the
-existing controller-worker path, and it's the one place in this plan where
-scope creep is a real risk.
+**Status: implemented** as a transport-agnostic state machine
+(`include/psx/election/bully.hpp`, `src/election/bully.cpp`), with epochs and a
+leader beacon. It is tested in `tests/unit/election/test_bully.cpp` and by
+property tests in `tests/unit/sim/test_simulation.cpp`, and demonstrated with
+`pipeshellx sim election`. Not built yet: a socket driver that runs real
+controller processes as candidates. That driver must take the sender id from
+the mTLS SAN (see `07-security-review.md`, R-02). The design notes below are
+the original plan, kept for the report.
 
 ## Goal
 

@@ -2004,4 +2004,74 @@ TEST(ClusterSnapshotIntegrationTest, ControllerRecordsNodeSnapshotsToDisk) {
     EXPECT_NE(lastLine.find(R"("lamport_ts":1)"), std::string::npos);
 }
 
+// A Lamport clock belongs to a process. Two controllers on two separate
+// connections to the same node must advance ONE node clock: A's OPEN(ts=1)
+// moves it to 2, then B's OPEN(ts=1) must move it to max(2,1)+1 = 3. With a
+// clock per connection (the earlier bug) the node would report 2.
+TEST(LamportClockIntegrationTest, NodeClockIsSharedAcrossControllerConnections) {
+    Fleet fleet = makeFleet();
+    auto listener = Socket::listen("127.0.0.1", 0);
+    ASSERT_TRUE(listener.ok());
+    const std::uint16_t port = listener.value().localPort().value();
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+
+    NodeServer server(r, std::move(listener.value()),
+                      {.certificatePem = fleet.nodeId.certificatePem,
+                       .privateKeyPem = fleet.nodeId.privateKeyPem,
+                       .caPem = fleet.caCert},
+                      [](std::string_view san) { return san == "psx://controller"; });
+    ASSERT_TRUE(server.start().ok());
+
+    const psx::os::TlsConfig ctlConfig{.certificatePem = fleet.ctlId.certificatePem,
+                                       .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                       .caPem = fleet.caCert};
+    const std::vector<NativeController::Target> target = {
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"}};
+
+    for (int i = 0; i < 2; ++i) { // two independent controllers, each with a fresh clock
+        NativeController controller(r, ctlConfig);
+        std::vector<NativeController::HostResult> results;
+        ASSERT_TRUE(controller
+                        .start(target, {"/bin/true"},
+                               [&](std::vector<NativeController::HostResult> res) {
+                                   results = std::move(res);
+                                   r.stop();
+                               })
+                        .ok());
+        r.after(std::chrono::seconds(5), [&] { r.stop(); });
+        ASSERT_TRUE(r.run().ok());
+        ASSERT_EQ(results.size(), 1U);
+        ASSERT_TRUE(results[0].ok) << results[0].error;
+        EXPECT_EQ(results[0].lamportTs, 1U); // each controller's first dispatch
+    }
+    EXPECT_EQ(server.metrics().lamportClock, 3U);
+}
+
+// Never-dispatched targets must not be stamped with a logical time.
+TEST(ClusterSnapshotIntegrationTest, UndispatchedTargetHasNoLamportTimestamp) {
+    Fleet fleet = makeFleet();
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+    NativeController controller(r, {.certificatePem = fleet.ctlId.certificatePem,
+                                    .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                    .caPem = fleet.caCert});
+    std::vector<NativeController::HostResult> results;
+    ASSERT_TRUE(controller
+                    .start({{.host = "127.0.0.1", .port = 1, .expectedSan = "psx://node/1"}}, {"/bin/true"},
+                           [&](std::vector<NativeController::HostResult> res) {
+                               results = std::move(res);
+                               r.stop();
+                           })
+                    .ok());
+    r.after(std::chrono::seconds(5), [&] { r.stop(); });
+    ASSERT_TRUE(r.run().ok());
+    auto snap = controller.captureSnapshot();
+    ASSERT_EQ(snap.nodes().size(), 1U);
+    EXPECT_EQ(snap.nodes()[0].status, "lost");
+    EXPECT_EQ(snap.nodes()[0].lamportTs, 0U);
+}
+
 
