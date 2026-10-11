@@ -104,6 +104,13 @@ TEST(ParseRunTest, PolicyFileFlag) {
     EXPECT_THROW(static_cast<void>(psx::cli::parseRun({"--policy", "--", "id"})), std::runtime_error);
 }
 
+TEST(ParseRunTest, SnapshotFileFlagIsParsed) {
+    EXPECT_TRUE(psx::cli::parseRun({"--", "id"}).snapshotPath.empty());
+    EXPECT_EQ(psx::cli::parseRun({"--snapshot-file", "/var/log/snap.jsonl", "--", "id"}).snapshotPath,
+              "/var/log/snap.jsonl");
+    EXPECT_THROW(static_cast<void>(psx::cli::parseRun({"--snapshot-file", "--", "id"})), std::runtime_error);
+}
+
 TEST(ParseRunTest, TransportNativeAndItsFlags) {
     const auto defaultTransport = psx::cli::parseRun({"--", "id"});
     EXPECT_FALSE(defaultTransport.native);

@@ -28,6 +28,7 @@ struct DistributedRunner::Conn : psx::transport::SessionHandler {
     StreamId streamId = 0;
     bool exited = false;
     int exitCode = 0;
+    std::uint64_t lamportTs = 0;
     std::unique_ptr<NativeTransport> transport; // declared last: destroyed first
 
     void onData(StreamId /*id*/, std::string_view data, bool /*endStream*/, Channel channel) override {
@@ -122,8 +123,11 @@ void DistributedRunner::onConnReady(std::size_t index) {
     }
     // All connections are secured: open every stream so routing always has a
     // live downstream (all OPEN frames precede any DATA on the reactor).
+    // Tick the Lamport clock for each stage dispatch to maintain happens-before order.
     for (std::size_t j = 0; j < conns_.size(); ++j) {
-        conns_[j]->streamId = conns_[j]->session->open({.argv = argvs_[j], .cwd = {}});
+        conns_[j]->lamportTs = clock_.tick();
+        conns_[j]->streamId =
+            conns_[j]->session->open({.argv = argvs_[j], .cwd = {}, .lamportTs = conns_[j]->lamportTs});
     }
     streamsOpen_ = true;
     Conn& first = *conns_.front();
@@ -215,9 +219,11 @@ void DistributedRunner::fenceBefore(std::size_t index) {
 DistributedRunner::Outcome DistributedRunner::outcome() const {
     Outcome result;
     result.stageExitCodes.reserve(conns_.size());
+    result.stageLamportTimestamps.reserve(conns_.size());
     for (const auto& conn : conns_) {
         const int code = conn->exitCode;
         result.stageExitCodes.push_back(code);
+        result.stageLamportTimestamps.push_back(conn->lamportTs);
         if (code != 0) {
             result.exitCode = code; // pipefail: rightmost non-zero
         }

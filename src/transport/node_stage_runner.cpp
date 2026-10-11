@@ -18,6 +18,11 @@ using psx::os::SpawnSpec;
 NodeStageRunner::NodeStageRunner(psx::runtime::Reactor& reactor, CommandValidator validator)
     : reactor_(reactor), validator_(std::move(validator)) {}
 
+NodeStageRunner::NodeStageRunner(psx::runtime::Reactor& reactor,
+                                 CommandValidator validator,
+                                 psx::runtime::LamportClock& sharedClock)
+    : reactor_(reactor), validator_(std::move(validator)), clock_(&sharedClock) {}
+
 NodeStageRunner::~NodeStageRunner() {
     // Fencing: the controller connection dropping (peer close, kill -9, or a
     // torn-down NodeServer connection) destroys this runner while stages may
@@ -42,6 +47,15 @@ NodeStageRunner::~NodeStageRunner() {
 }
 
 void NodeStageRunner::onOpen(StreamId id, const OpenRequest& request) {
+    // Lamport clock: adopt the controller's timestamp when it sent one (OPEN
+    // v2), otherwise this is still a local event worth ordering, so tick
+    // regardless. See docs/ds-project/01-lamport-clocks.md.
+    if (request.lamportTs != 0) {
+        clock_->observe(request.lamportTs);
+    } else {
+        clock_->tick();
+    }
+
     if (request.argv.empty()) {
         session_->sendExit(id, {ExitStatus::Kind::Exited, 127});
         return;

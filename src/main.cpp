@@ -1,5 +1,6 @@
 #include "cli_options.hpp"
 #include "logger.hpp"
+#include "psx/cli/audit_command.hpp"
 #include "psx/cli/ca_command.hpp"
 #include "psx/cli/diff_command.hpp"
 #include "psx/cli/hosts_command.hpp"
@@ -7,6 +8,8 @@
 #include "psx/cli/ping_command.hpp"
 #include "psx/cli/pipe_command.hpp"
 #include "psx/cli/run_command.hpp"
+#include "psx/cli/sim_command.hpp"
+#include "psx/cli/snapshot_command.hpp"
 #include "psx/os/console.hpp"
 #include "psx/os/io.hpp"
 #include "psx/os/system.hpp"
@@ -72,6 +75,9 @@ Commands:
   node   systemd-unit|launchd-plist --cert F --key F --ca F --listen H:P
          [--allow SANs] [--crl F] [--policy F] [--control PATH]   emit service definition
   node   status --control PATH                         query a running node daemon
+  snapshot [dump] FILE [--latest] [--json]             inspect cluster snapshot records
+  sim    election|mutex [--nodes N] [--seed S] ...     simulate Bully / Ricart-Agrawala
+  audit  verify FILE [--expect-head HASH]              verify an --audit-log hash chain
   shell  [--verbose] [--log-file PATH]                 interactive REPL (default)
 
   --version   print the version and exit
@@ -153,6 +159,21 @@ int main(int argc, char** argv) {
             std::vector<std::string> rest(args.begin() + 1, args.end());
             initLogging(CliOptions{});
             return psx::cli::hostsSubcommand(rest, std::cout, std::cerr);
+        }
+
+        if (!args.empty() && args[0] == "audit") {
+            std::vector<std::string> rest(args.begin() + 1, args.end());
+            return psx::cli::runAuditCommand(rest, std::cout, std::cerr);
+        }
+
+        if (!args.empty() && args[0] == "sim") {
+            std::vector<std::string> rest(args.begin() + 1, args.end());
+            return psx::cli::runSimCommand(rest, std::cout, std::cerr);
+        }
+
+        if (!args.empty() && args[0] == "snapshot") {
+            std::vector<std::string> rest(args.begin() + 1, args.end());
+            return psx::cli::runSnapshotCommand(rest, std::cout, std::cerr);
         }
 
         // `shell` or no subcommand: the interactive REPL, with its own flags.

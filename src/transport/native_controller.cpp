@@ -106,6 +106,9 @@ NativeController::~NativeController() {
     for (const auto timer : retireTimers_) {
         reactor_.cancel(timer);
     }
+    if (snapshotTimer_ != 0) {
+        reactor_.cancel(snapshotTimer_); // the callback captures `this`
+    }
 }
 
 psx::Result<void> NativeController::start(const std::vector<Target>& targets,
@@ -176,10 +179,14 @@ void NativeController::fillSlots() {
     }
     filling_ = true;
     const std::size_t limit = options_.concurrency == 0 ? conns_.size() : options_.concurrency;
+    const std::size_t prevStarted = nextToStart_;
     while (nextToStart_ < conns_.size() && active_ < limit && !cancelling_) {
         launch(nextToStart_++);
     }
     filling_ = false;
+    if (nextToStart_ > prevStarted) {
+        takeSnapshot();
+    }
 }
 
 void NativeController::launch(std::size_t index) {
@@ -209,7 +216,14 @@ void NativeController::launch(std::size_t index) {
                                    .onReady =
                                        [this, raw] {
                                            if (!raw->done && raw->session != nullptr) {
-                                               raw->session->open(OpenRequest{.argv = command_, .cwd = {}});
+                                               // Lamport tick: dispatching this stage is a local
+                                               // event, ordered relative to every other OPEN this
+                                               // controller sends and whatever the receiving node
+                                               // observes off it. See
+                                               // docs/ds-project/01-lamport-clocks.md.
+                                               raw->result.lamportTs = clock_.tick();
+                                               raw->session->open(OpenRequest{
+                                                   .argv = command_, .cwd = {}, .lamportTs = raw->result.lamportTs});
                                            }
                                        },
                                    .onError = [raw](const psx::Error& error) { raw->fail(error.message()); }},
@@ -257,6 +271,7 @@ void NativeController::onConnDone(std::size_t index) {
         // Retire it on the next reactor turn so its callback stack has unwound.
         retireTimers_.push_back(reactor_.after(std::chrono::milliseconds(0), [this, index] { retire(index); }));
     }
+    takeSnapshot();
     completeIfReady();
 }
 
@@ -280,6 +295,7 @@ void NativeController::completeIfReady() {
     if (remaining_ != 0 || active_ != 0 || completed_) {
         return;
     }
+    flushSnapshot(); // final, consistent state of every target
     completed_ = true;
     std::vector<HostResult> results;
     results.reserve(conns_.size());
@@ -290,6 +306,72 @@ void NativeController::completeIfReady() {
         auto callback = std::move(onComplete_);
         callback(std::move(results)); // may destroy this controller
     }
+}
+
+psx::runtime::ClusterSnapshot NativeController::captureSnapshot() const {
+    const std::string runId = options_.runId.empty() ? "pipeshellx-run" : options_.runId;
+    psx::runtime::ClusterSnapshot snapshot(runId);
+    for (const auto& conn : conns_) {
+        psx::runtime::NodeSnapshot node;
+        node.host = conn->target.host;
+        node.stageId = "stage-" + std::to_string(conn->index);
+        if (conn->done) {
+            if (conn->result.ok) {
+                node.status = "exited";
+            } else if (conn->result.timedOut) {
+                node.status = "timed_out";
+            } else if (conn->result.cancelled) {
+                node.status = "cancelled";
+            } else {
+                node.status = "lost";
+            }
+        } else if (conn->active) {
+            node.status = "running";
+        } else {
+            node.status = "connecting";
+        }
+        node.exitCode = conn->result.exitCode;
+        // The timestamp of this node's dispatch event, or 0 if it was never
+        // dispatched. Never substitute the controller's current clock: that
+        // would stamp an event that did not happen with a logical time.
+        node.lamportTs = conn->result.lamportTs;
+        snapshot.record(std::move(node));
+    }
+    return snapshot;
+}
+
+void NativeController::takeSnapshot() {
+    if (options_.snapshotPath.empty() || completed_) {
+        return;
+    }
+    // Coalesce. Every snapshot records every target, and launches/completions
+    // happen once per target, so writing on every event is O(N^2) bytes of
+    // synchronous disk I/O on the reactor thread (~100 MB for 1000 hosts).
+    // Instead, mark dirty and write at most once per kSnapshotInterval; the
+    // final state is always written by flushSnapshot() from completeIfReady().
+    if (snapshotTimer_ != 0) {
+        return; // a write is already scheduled and will see this change
+    }
+    snapshotTimer_ = reactor_.after(kSnapshotInterval, [this] {
+        snapshotTimer_ = 0;
+        writeSnapshot();
+    });
+}
+
+void NativeController::flushSnapshot() {
+    if (snapshotTimer_ != 0) {
+        reactor_.cancel(snapshotTimer_);
+        snapshotTimer_ = 0;
+    }
+    if (!options_.snapshotPath.empty()) {
+        writeSnapshot();
+    }
+}
+
+void NativeController::writeSnapshot() {
+    // An unwritable path degrades to "no snapshots", like the audit log; the
+    // run itself must never fail because observability could not be written.
+    (void)captureSnapshot().appendToFile(options_.snapshotPath);
 }
 
 } // namespace psx::transport

@@ -35,7 +35,7 @@ namespace {
 // POSIX.1-2024 standardised addchdir; macOS 26 and glibc 2.41 ship it and
 // deprecate the _np spelling, which older Apple/glibc releases still need.
 #if (defined(__APPLE__) && defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && __MAC_OS_X_VERSION_MIN_REQUIRED >= 260000) ||   \
-    PSX_GLIBC_AT_LEAST(2, 41)
+    PSX_GLIBC_AT_LEAST(2, 44)
 #define PSX_SPAWN_ADDCHDIR posix_spawn_file_actions_addchdir
 #elif defined(__APPLE__) || PSX_GLIBC_AT_LEAST(2, 29)
 #define PSX_SPAWN_ADDCHDIR posix_spawn_file_actions_addchdir_np

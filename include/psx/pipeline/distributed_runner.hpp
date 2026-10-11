@@ -2,6 +2,7 @@
 
 #include "psx/os/tls.hpp"
 #include "psx/result.hpp"
+#include "psx/runtime/lamport_clock.hpp"
 #include "psx/runtime/reactor.hpp"
 #include "psx/transport/native_transport.hpp"
 
@@ -34,6 +35,8 @@ public:
         int exitCode = 0;                // pipefail: the rightmost non-zero stage, else 0
         std::vector<int> stageExitCodes; // per stage (empty on a connect/handshake failure)
         std::string error;               // non-empty: a connect/handshake failure aborted the run
+        // Per-stage Lamport timestamp assigned at stage dispatch (see docs/ds-project/01-lamport-clocks.md).
+        std::vector<std::uint64_t> stageLamportTimestamps;
     };
     using OnOutput = std::function<void(std::string_view)>;
 
@@ -60,6 +63,9 @@ public:
     // stages accounted as the node's forced-fencing status (137).
     void cancel();
 
+    // Returns the current Lamport logical clock counter of this runner.
+    std::uint64_t lamportClockValue() const noexcept { return clock_.value(); }
+
 private:
     struct Conn;
     void onConnReady(std::size_t index);
@@ -83,6 +89,8 @@ private:
     std::string stdinBuffer_;      // stdin buffered before the streams open
     bool stdinEndPending_ = false; // closeStdin() before the streams open
     bool done_ = false;
+    // Lamport clock for ordering stage dispatch events (see docs/ds-project/01-lamport-clocks.md).
+    psx::runtime::LamportClock clock_;
 };
 
 } // namespace psx::pipeline

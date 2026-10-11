@@ -78,8 +78,38 @@ TEST(OpenRequestTest, VersionByteIsFirst) {
 
 TEST(OpenRequestTest, RejectsAnUnknownVersion) {
     std::string wire = encodeOpen(OpenRequest{.argv = {"x"}, .cwd = ""});
-    wire[0] = 2; // bump the version
+    wire[0] = 3; // version 2 is now valid (OPEN v2, adds lamportTs); 3 is not
     EXPECT_FALSE(decodeOpen(wire).ok());
+}
+
+TEST(OpenRequestTest, V2RoundTripsArgvCwdAndLamportTimestamp) {
+    const OpenRequest in{.argv = {"/bin/sh", "-c", "echo hi"}, .cwd = "/tmp/work", .lamportTs = 42};
+    const auto out = decodeOpen(encodeOpenV2(in));
+    ASSERT_TRUE(out.ok()) << out.error().message();
+    EXPECT_EQ(out.value(), in);
+    EXPECT_EQ(out.value().lamportTs, 42U);
+}
+
+TEST(OpenRequestTest, V1PayloadDecodesWithZeroLamportTimestamp) {
+    const OpenRequest in{.argv = {"x"}, .cwd = ""};
+    const auto out = decodeOpen(encodeOpen(in)); // v1 encoder
+    ASSERT_TRUE(out.ok()) << out.error().message();
+    EXPECT_EQ(out.value().lamportTs, 0U);
+}
+
+TEST(OpenRequestTest, V2VersionByteIsTwo) {
+    const std::string wire = encodeOpenV2(OpenRequest{.argv = {"x"}, .cwd = ""});
+    EXPECT_EQ(static_cast<unsigned char>(wire[0]), 2u);
+}
+
+TEST(OpenRequestTest, V2RejectsTruncatedLamportTimestamp) {
+    std::string wire = encodeOpenV2(OpenRequest{.argv = {"x"}, .cwd = "", .lamportTs = 0x0102030405060708ULL});
+    // Drop bytes one at a time off the end of the 8-byte lamportTs field only.
+    for (int drop = 1; drop <= 8; ++drop) {
+        const std::string truncated = wire.substr(0, wire.size() - drop);
+        EXPECT_FALSE(decodeOpen(truncated).ok()) << "dropped " << drop << " byte(s)";
+    }
+    EXPECT_TRUE(decodeOpen(wire).ok()); // the full v2 payload still decodes
 }
 
 TEST(OpenRequestTest, RejectsTruncatedInput) {

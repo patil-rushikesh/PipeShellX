@@ -53,7 +53,11 @@ StreamId Session::open(const OpenRequest& request) {
     }
     const StreamId id = nextStreamId_++;
     streams_.try_emplace(id, initialWindow_);
-    send(Frame{.type = FrameType::Open, .flags = 0, .streamId = id, .payload = encodeOpen(request)});
+    // A caller that populated lamportTs (see docs/ds-project/01-lamport-clocks.md)
+    // gets the OPEN v2 payload automatically; everyone else keeps the exact v1
+    // wire bytes this Session has always sent.
+    const std::string payload = request.lamportTs != 0 ? encodeOpenV2(request) : encodeOpen(request);
+    send(Frame{.type = FrameType::Open, .flags = 0, .streamId = id, .payload = payload});
     return id;
 }
 

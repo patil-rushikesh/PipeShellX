@@ -6,7 +6,8 @@ namespace psx::transport {
 
 namespace {
 
-constexpr std::uint8_t kOpenVersion = 1;
+constexpr std::uint8_t kOpenVersion1 = 1;
+constexpr std::uint8_t kOpenVersion2 = 2;
 
 psx::Error malformed(const char* what) {
     return psx::Error{psx::ErrorClass::Other, 0, what};
@@ -30,6 +31,14 @@ public:
         }
         out = readU32BE(data_.data() + pos_);
         pos_ += 4;
+        return true;
+    }
+    bool takeU64(std::uint64_t& out) {
+        if (remaining() < 8) {
+            return false;
+        }
+        out = readU64BE(data_.data() + pos_);
+        pos_ += 8;
         return true;
     }
     // Reads a bounded u32 length then that many bytes.
@@ -80,7 +89,7 @@ psx::Result<void> validateOpenRequest(const OpenRequest& request) {
 
 std::string encodeOpen(const OpenRequest& request) {
     std::string out;
-    out.push_back(static_cast<char>(kOpenVersion));
+    out.push_back(static_cast<char>(kOpenVersion1));
     writeU32BE(out, static_cast<std::uint32_t>(request.argv.size()));
     for (const auto& arg : request.argv) {
         writeU32BE(out, static_cast<std::uint32_t>(arg.size()));
@@ -91,13 +100,27 @@ std::string encodeOpen(const OpenRequest& request) {
     return out;
 }
 
+std::string encodeOpenV2(const OpenRequest& request) {
+    std::string out;
+    out.push_back(static_cast<char>(kOpenVersion2));
+    writeU32BE(out, static_cast<std::uint32_t>(request.argv.size()));
+    for (const auto& arg : request.argv) {
+        writeU32BE(out, static_cast<std::uint32_t>(arg.size()));
+        out.append(arg);
+    }
+    writeU32BE(out, static_cast<std::uint32_t>(request.cwd.size()));
+    out.append(request.cwd);
+    writeU64BE(out, request.lamportTs);
+    return out;
+}
+
 psx::Result<OpenRequest> decodeOpen(std::string_view payload) {
     Reader reader(payload);
     std::uint8_t version = 0;
     if (!reader.takeU8(version)) {
         return malformed("OPEN payload: missing version");
     }
-    if (version != kOpenVersion) {
+    if (version != kOpenVersion1 && version != kOpenVersion2) {
         return malformed("OPEN payload: unsupported version");
     }
     std::uint32_t argc = 0;
@@ -118,6 +141,11 @@ psx::Result<OpenRequest> decodeOpen(std::string_view payload) {
     }
     if (!reader.takeString(request.cwd, kMaxOpenCwdBytes)) {
         return malformed("OPEN payload: truncated cwd");
+    }
+    if (version == kOpenVersion2) {
+        if (!reader.takeU64(request.lamportTs)) {
+            return malformed("OPEN payload: truncated lamport timestamp");
+        }
     }
     if (reader.remaining() != 0) {
         return malformed("OPEN payload: trailing bytes");

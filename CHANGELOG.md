@@ -7,6 +7,23 @@ as 0.6.0, but no version tag or release artifact has been published on GitHub.
 
 ### Added
 
+- Distributed-systems layer (see `docs/ds-project/`): Lamport clocks carried in
+  OPEN v2 with one saturating clock per node process; coalesced cluster
+  snapshots (`run --snapshot-file`, `snapshot dump`); Ricart-Agrawala mutual
+  exclusion and Bully leader election (with epochs and a leader beacon) as
+  sans-IO state machines; `pipeshellx sim election|mutex` to demonstrate them
+  under message reordering and crashes; a SHA-256 hash-chained audit log and
+  `pipeshellx audit verify [--expect-head]`.
+
+### Security
+
+- Lamport clock no longer wraps to 0 on a peer-supplied `2^64-1`.
+- Snapshot files are parsed by a strict, bounded JSON reader (no truncation on
+  `]` in strings, no unbounded line buffering, duplicate keys rejected), and
+  `snapshot dump` neutralises terminal escape sequences.
+- New audit and snapshot files are created owner-only (`0600`).
+- `fleet.ini` is git-ignored so a local inventory cannot be committed by accident.
+
 - Lowercase `pipeshellx` multi-command CLI with `run`, `ping`, `diff`, `pipe`,
   `hosts`, `ca`, `node`, and the legacy `shell` REPL.
 - INI inventories with groups, tags, selectors, SSH/native transport metadata,

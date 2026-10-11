@@ -36,6 +36,9 @@ __pycache__/
 # examples and normal CLI use; intentionally versioned samples should use a
 # distinct name. Existing tracked test fixtures remain tracked.
 /inventory.ini
+# Local fleet inventories name real hosts, users and IPs: never commit them.
+/fleet.ini
+/*.ini.local
 /clients.txt
 /*.known_hosts
 /*.jsonl

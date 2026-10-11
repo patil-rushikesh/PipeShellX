@@ -14,6 +14,7 @@
 #include "psx/os/socket.hpp"
 #include "psx/os/tls.hpp"
 #include "psx/runtime/reactor.hpp"
+#include "test_support.hpp"
 #include "tls_certs.hpp"
 
 #include <gtest/gtest.h>
@@ -553,6 +554,7 @@ TEST(NativeControllerTest, RunsACommandOnANodeAndCollectsOutput) {
     EXPECT_EQ(results[0].exitCode, 0);
     EXPECT_EQ(results[0].output, "native-run\n");
     EXPECT_EQ(results[0].host, "127.0.0.1");
+    EXPECT_EQ(results[0].lamportTs, 1U);
 }
 
 TEST(NativeControllerTest, ReportsAnErrorForAnUnreachableNode) {
@@ -1304,6 +1306,8 @@ TEST(DistributedRunnerTest, BridgesTwoRemoteStages) {
     EXPECT_EQ(output, "a\nb\nc\n"); // stage1 (sort) output of stage0 (printf) input
     EXPECT_EQ(outcome.exitCode, 0);
     EXPECT_EQ(outcome.stageExitCodes, (std::vector<int>{0, 0}));
+    EXPECT_EQ(outcome.stageLamportTimestamps, (std::vector<std::uint64_t>{1, 2}));
+    EXPECT_EQ(runner.lamportClockValue(), 2U);
 }
 
 // pipefail across the wire: a failing downstream stage sets the pipeline code.
@@ -1866,3 +1870,208 @@ TEST(CanaryControllerTest, FailedCanarySkipsTheRest) {
     }
     EXPECT_EQ(out.acceptedByNode, 1U) << "only the canary connected; the rest were skipped";
 }
+
+// Lamport clock happens-before verification:
+// When the controller dispatches multiple stages across nodes, each stage dispatch
+// ticks the controller's clock, yielding strictly monotonic timestamps (1, 2, 3),
+// and the node observes the received timestamp, ensuring that local stage execution
+// happens strictly after dispatch.
+TEST(LamportClockIntegrationTest, StageDispatchesMaintainStrictHappensBeforeOrder) {
+    Fleet fleet = makeFleet();
+
+    auto listener = Socket::listen("127.0.0.1", 0);
+    ASSERT_TRUE(listener.ok());
+    const std::uint16_t port = listener.value().localPort().value();
+
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+
+    psx::transport::NodeServer server(r, std::move(listener.value()),
+                                      {.certificatePem = fleet.nodeId.certificatePem,
+                                       .privateKeyPem = fleet.nodeId.privateKeyPem,
+                                       .caPem = fleet.caCert},
+                                      [](std::string_view san) { return san == "psx://controller"; });
+    ASSERT_TRUE(server.start().ok());
+
+    psx::transport::NativeController controller(r, {.certificatePem = fleet.ctlId.certificatePem,
+                                                    .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                                    .caPem = fleet.caCert});
+
+    const std::vector<NativeController::Target> targets = {
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"},
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"},
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"}};
+
+    std::vector<NativeController::HostResult> results;
+    ASSERT_TRUE(controller
+                    .start(targets, {"/bin/echo", "ds-test"},
+                           [&](std::vector<NativeController::HostResult> res) {
+                               results = std::move(res);
+                               r.stop();
+                           },
+                           {.concurrency = 1}) // serialized dispatch
+                    .ok());
+
+    r.after(std::chrono::seconds(10), [&] { r.stop(); });
+    ASSERT_TRUE(r.run().ok());
+
+    ASSERT_EQ(results.size(), 3U);
+    for (std::size_t i = 0; i < results.size(); ++i) {
+        EXPECT_TRUE(results[i].ok) << results[i].error;
+        EXPECT_EQ(results[i].exitCode, 0);
+        EXPECT_EQ(results[i].lamportTs, static_cast<std::uint64_t>(i + 1));
+    }
+    // Strict partial/total order check: ts(dispatch_0) < ts(dispatch_1) < ts(dispatch_2)
+    EXPECT_LT(results[0].lamportTs, results[1].lamportTs);
+    EXPECT_LT(results[1].lamportTs, results[2].lamportTs);
+}
+
+// Cluster snapshot verification (simplified Chandy-Lamport local state capture):
+// As nodes start and finish their assigned stages, NativeController captures
+// point-in-time cluster states (JSONL lines with host, stageId, status, exit code, lamportTs).
+TEST(ClusterSnapshotIntegrationTest, ControllerRecordsNodeSnapshotsToDisk) {
+    test_support::ScopedTempCwd cwd("cluster-snapshot-test");
+    const std::string snapshotFile = (cwd.path() / "snapshots.jsonl").string();
+
+    Fleet fleet = makeFleet();
+
+    auto listener = Socket::listen("127.0.0.1", 0);
+    ASSERT_TRUE(listener.ok());
+    const std::uint16_t port = listener.value().localPort().value();
+
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+
+    psx::transport::NodeServer server(r, std::move(listener.value()),
+                                      {.certificatePem = fleet.nodeId.certificatePem,
+                                       .privateKeyPem = fleet.nodeId.privateKeyPem,
+                                       .caPem = fleet.caCert},
+                                      [](std::string_view san) { return san == "psx://controller"; });
+    ASSERT_TRUE(server.start().ok());
+
+    psx::transport::NativeController controller(r, {.certificatePem = fleet.ctlId.certificatePem,
+                                                    .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                                    .caPem = fleet.caCert});
+
+    const std::vector<NativeController::Target> targets = {
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"}};
+
+    std::vector<NativeController::HostResult> results;
+    ASSERT_TRUE(controller
+                    .start(targets, {"/bin/echo", "snap-test"},
+                           [&](std::vector<NativeController::HostResult> res) {
+                               results = std::move(res);
+                               r.stop();
+                           },
+                           {.snapshotPath = snapshotFile, .runId = "run-snap-01"})
+                    .ok());
+
+    r.after(std::chrono::seconds(5), [&] { r.stop(); });
+    ASSERT_TRUE(r.run().ok());
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_TRUE(results[0].ok);
+
+    // In-memory captureSnapshot() verification:
+    auto snap = controller.captureSnapshot();
+    ASSERT_EQ(snap.nodes().size(), 1U);
+    EXPECT_EQ(snap.nodes()[0].host, "127.0.0.1");
+    EXPECT_EQ(snap.nodes()[0].status, "exited");
+    EXPECT_EQ(snap.nodes()[0].exitCode, 0);
+    EXPECT_EQ(snap.nodes()[0].lamportTs, 1U);
+
+    // On-disk JSONL verification:
+    std::ifstream in(snapshotFile);
+    ASSERT_TRUE(in.good());
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    ASSERT_FALSE(lines.empty());
+    for (const auto& l : lines) {
+        EXPECT_NE(l.find(R"("type":"cluster_snapshot")"), std::string::npos);
+        EXPECT_NE(l.find(R"("run_id":"run-snap-01")"), std::string::npos);
+        EXPECT_NE(l.find(R"("127.0.0.1")"), std::string::npos);
+    }
+    const std::string& lastLine = lines.back();
+    EXPECT_NE(lastLine.find(R"("status":"exited")"), std::string::npos);
+    EXPECT_NE(lastLine.find(R"("exit_code":0)"), std::string::npos);
+    EXPECT_NE(lastLine.find(R"("lamport_ts":1)"), std::string::npos);
+}
+
+// A Lamport clock belongs to a process. Two controllers on two separate
+// connections to the same node must advance ONE node clock: A's OPEN(ts=1)
+// moves it to 2, then B's OPEN(ts=1) must move it to max(2,1)+1 = 3. With a
+// clock per connection (the earlier bug) the node would report 2.
+TEST(LamportClockIntegrationTest, NodeClockIsSharedAcrossControllerConnections) {
+    Fleet fleet = makeFleet();
+    auto listener = Socket::listen("127.0.0.1", 0);
+    ASSERT_TRUE(listener.ok());
+    const std::uint16_t port = listener.value().localPort().value();
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+
+    NodeServer server(r, std::move(listener.value()),
+                      {.certificatePem = fleet.nodeId.certificatePem,
+                       .privateKeyPem = fleet.nodeId.privateKeyPem,
+                       .caPem = fleet.caCert},
+                      [](std::string_view san) { return san == "psx://controller"; });
+    ASSERT_TRUE(server.start().ok());
+
+    const psx::os::TlsConfig ctlConfig{.certificatePem = fleet.ctlId.certificatePem,
+                                       .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                       .caPem = fleet.caCert};
+    const std::vector<NativeController::Target> target = {
+        {.host = "127.0.0.1", .port = port, .expectedSan = "psx://node/1"}};
+
+    for (int i = 0; i < 2; ++i) { // two independent controllers, each with a fresh clock
+        NativeController controller(r, ctlConfig);
+        std::vector<NativeController::HostResult> results;
+        ASSERT_TRUE(controller
+                        .start(target, {"/bin/true"},
+                               [&](std::vector<NativeController::HostResult> res) {
+                                   results = std::move(res);
+                                   r.stop();
+                               })
+                        .ok());
+        r.after(std::chrono::seconds(5), [&] { r.stop(); });
+        ASSERT_TRUE(r.run().ok());
+        ASSERT_EQ(results.size(), 1U);
+        ASSERT_TRUE(results[0].ok) << results[0].error;
+        EXPECT_EQ(results[0].lamportTs, 1U); // each controller's first dispatch
+    }
+    EXPECT_EQ(server.metrics().lamportClock, 3U);
+}
+
+// Never-dispatched targets must not be stamped with a logical time.
+TEST(ClusterSnapshotIntegrationTest, UndispatchedTargetHasNoLamportTimestamp) {
+    Fleet fleet = makeFleet();
+    auto reactor = Reactor::create();
+    ASSERT_TRUE(reactor.ok());
+    Reactor& r = *reactor.value();
+    NativeController controller(r, {.certificatePem = fleet.ctlId.certificatePem,
+                                    .privateKeyPem = fleet.ctlId.privateKeyPem,
+                                    .caPem = fleet.caCert});
+    std::vector<NativeController::HostResult> results;
+    ASSERT_TRUE(controller
+                    .start({{.host = "127.0.0.1", .port = 1, .expectedSan = "psx://node/1"}}, {"/bin/true"},
+                           [&](std::vector<NativeController::HostResult> res) {
+                               results = std::move(res);
+                               r.stop();
+                           })
+                    .ok());
+    r.after(std::chrono::seconds(5), [&] { r.stop(); });
+    ASSERT_TRUE(r.run().ok());
+    auto snap = controller.captureSnapshot();
+    ASSERT_EQ(snap.nodes().size(), 1U);
+    EXPECT_EQ(snap.nodes()[0].status, "lost");
+    EXPECT_EQ(snap.nodes()[0].lamportTs, 0U);
+}
+
+

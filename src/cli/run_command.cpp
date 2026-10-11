@@ -267,6 +267,8 @@ RunInvocation parseRun(const std::vector<std::string>& args) {
             invocation.shell = parseShell(valueFor(i, arg));
         } else if (arg == "--audit-log") {
             invocation.auditPath = valueFor(i, arg);
+        } else if (arg == "--snapshot-file") {
+            invocation.snapshotPath = valueFor(i, arg);
         } else if (arg == "--transport") {
             invocation.transportExplicit = true;
             const std::string value = valueFor(i, arg);
@@ -561,7 +563,9 @@ int runNative(const RunInvocation& invocation,
         .concurrency = static_cast<std::size_t>(invocation.concurrency),
         .policy = invocation.policy,
         .ringBytes = invocation.ringBytes,
-        .failFast = invocation.failFast};
+        .failFast = invocation.failFast,
+        .snapshotPath = invocation.snapshotPath,
+        .runId = runId};
 
     auto signalRegistration = r.onSignal([&](psx::os::Signal) {
         if (finalized || stopCause == StopCause::Interrupt) {

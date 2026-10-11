@@ -14,10 +14,14 @@ contract in [psx/1](wire_protocol.md), deployment boundaries in
 
 ## Architectural boundaries
 
-- A run has one coordinator: the CLI process that started it. PipeShellX has
-  no replicated controller, leader election, database, or distributed
-  consensus protocol. `--consensus` and `diff` compare host
-  output; they are reduction operations, not agreement protocols.
+- A run has one coordinator: the CLI process that started it. The production
+  controller is not replicated and PipeShellX has no database or consensus
+  protocol. `--consensus` and `diff` compare host output; they are reduction
+  operations, not agreement protocols. Bully leader election and
+  Ricart-Agrawala mutual exclusion exist as tested, transport-agnostic state
+  machines (`include/psx/election/`, `include/psx/sync/`) exercised by
+  `pipeshellx sim`; they are not yet wired between real controller processes
+  (see `docs/ds-project/`).
 - SSH is the agentless transport. The native psx/1 node is optional and exists
   for multiplexed, channel-aware execution and remote pipeline edges.
 - The operator and each node's operating-system account are trust boundaries.

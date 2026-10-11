@@ -3,6 +3,7 @@
 #include "psx/os/socket.hpp"
 #include "psx/os/tls.hpp"
 #include "psx/result.hpp"
+#include "psx/runtime/lamport_clock.hpp"
 #include "psx/runtime/reactor.hpp"
 #include "psx/transport/native_transport.hpp"
 #include "psx/transport/node_stage_runner.hpp"
@@ -44,6 +45,7 @@ public:
         std::uint64_t acceptedTotal = 0;   // connections accepted since start
         std::size_t activeConnections = 0; // currently open
         std::size_t activeStages = 0;      // stages running now, across all connections
+        std::uint64_t lamportClock = 0;    // this node's Lamport clock (shared by all connections)
     };
     Metrics metrics() const;
 
@@ -66,6 +68,11 @@ private:
     std::function<bool(std::string_view)> authorize_;
     NodeStageRunner::CommandValidator validateCommand_;
     psx::runtime::Token listenerToken_ = 0;
+    // One Lamport clock for the whole node process, shared by every
+    // connection's runner (see NodeStageRunner's shared-clock constructor).
+    // Declared BEFORE connections_ on purpose: members are destroyed in
+    // reverse order, so the clock outlives every runner that points at it.
+    psx::runtime::LamportClock clock_;
     std::unordered_map<std::uint64_t, Connection> connections_;
     std::vector<std::uint64_t> pendingRemoval_;
     psx::runtime::TimerId reapTimer_ = 0;

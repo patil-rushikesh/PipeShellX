@@ -47,6 +47,7 @@ struct RunInvocation {
     bool shellExplicit = false;             // --shell was supplied (including --shell posix)
     bool failFast = false;                  // --fail-fast: abort the run on the first final failure
     std::string auditPath;                  // --audit-log FILE: append a JSONL audit trail (empty = off)
+    std::string snapshotPath;               // --snapshot-file FILE: record cluster snapshots (empty = off)
     bool native = false;                    // --transport native: use the psx/1 mTLS backplane instead of ssh
     bool transportExplicit = false;         // --transport was supplied; overrides per-host inventory transport
     std::string certPath;                   // --cert: controller certificate (native)

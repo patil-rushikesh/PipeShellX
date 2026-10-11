@@ -91,6 +91,28 @@ Unknown versions, fields beyond those bounds, truncated fields, and trailing
 bytes are protocol errors. Environment, limits, timeout, PTY, and resume
 metadata are not part of version 1.
 
+## OPEN payload version 2 (Lamport timestamp)
+
+Version 2 is version 1 followed by one field: the controller's Lamport clock
+value at the moment it dispatched the stage.
+
+```
+u8   version = 2
+... identical to version 1 (argc, arguments, cwd) ...
+u64  lamport_ts          # big-endian
+```
+
+The node applies the Lamport receive rule, `clock = max(clock, lamport_ts) + 1`,
+to a single clock shared by every controller connection of that node process.
+A `lamport_ts` of `0` means "not set". The clock saturates at `2^64 - 1`
+instead of wrapping, so a peer cannot reset it by sending the maximum value.
+
+A controller sends version 2 only when it has a timestamp to carry; otherwise
+it sends the exact version-1 bytes. Nodes accept both versions. **Compatibility
+limit:** there is no capability negotiation, so a node built before version 2
+rejects a version-2 `OPEN` as an unsupported version and the connection fails.
+Upgrade nodes before controllers in a mixed fleet.
+
 ## DATA and half-close
 
 `DATA` preserves frame order within a connection. Bytes are opaque; psx/1 does
